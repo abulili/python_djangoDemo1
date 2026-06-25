@@ -1,0 +1,47 @@
+# Python 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+*.cache
+
+# 数据库文件（开发时的 SQLite 数据）
+db.sqlite3
+*.db
+*.sqlite3
+
+# 环境变量（包含 API Key 等敏感信息）
+.env
+.env.local
+.env.*.local
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Django 静态文件
+static/
+media/
+
+# 日志文件
+*.log
+logs/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
+tmp/
