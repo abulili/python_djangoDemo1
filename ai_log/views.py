@@ -35,6 +35,8 @@ from datetime import datetime, timedelta
 from django.http import StreamingHttpResponse
 import json
 
+from rest_framework.permissions import IsAuthenticated
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -67,13 +69,14 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     """
     queryset = AICallLog.objects.all() # 查询所有数据
     serializer_class = AICallLogSerializer # 使用哪个序列化器
+    permission_classes = [IsAuthenticated] # 强制token登录
 
     
     # 
     def call_company_ai(self, prompt):
         """调用AI接口返回回答"""
         AI_URL = "https://api.deepseek.com"
-        AI_API_KEY = "sk-e981ebb1449d4c63a9438088640e76de"
+        AI_API_KEY = "xxx"
 
         headers = {
             'Authorization': f"Bearer {AI_API_KEY}",
@@ -103,7 +106,6 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         """调用AI接口返回回答"""
         client = OpenAI(api_key=settings.DEEPSEEK_API_KEY,base_url="https://api.deepseek.com")
         # print(os.getenv("DEEPSEEK_API_KEY"))
-        print('sk-024d26b65fb24a8bad101414b0a589de', settings.DEEPSEEK_API_KEY)
         
         for attempt in range(retries):
             try: 
@@ -200,7 +202,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         return error_response("数据校验失败", code=400, data=serializer.errors)
         # return Response(serializer.data)
     
-    @action(detail=False, methods=['get'], url_path='stats')
+    @action(detail=False, methods=['get'], url_path='stats', permission_classes=[]) # 这个接口不需要登录
     def get_stats(self, request):
         """
         获取调用统计信息

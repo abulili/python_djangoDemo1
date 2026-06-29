@@ -40,6 +40,8 @@ import os
 from dotenv import load_dotenv
 from pathlib import Path
 
+from datetime import timedelta
+
 # 项目根目录
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -63,6 +65,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'ai_log',
+    'rest_framework_simplejwt'
 ]
 
 MIDDLEWARE = [
@@ -158,6 +161,7 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework.authentication.SessionAuthentication',
         'rest_framework.authentication.BasicAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication'
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.AllowAny',
@@ -174,4 +178,10 @@ REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'ai_log.exceptions.custom_exception_handler',
     'UNICODE_JSON': True,  # ← 关键配置
     'COERCE_DECIMAL_TO_STRING': True,
+}
+
+# jwt配置 token
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
