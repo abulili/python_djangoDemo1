@@ -69,7 +69,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     """
     queryset = AICallLog.objects.all() # 查询所有数据
     serializer_class = AICallLogSerializer # 使用哪个序列化器
-    permission_classes = [IsAuthenticated] # 强制token登录
+    # permission_classes = [IsAuthenticated] # 强制token登录
 
     
     # 
@@ -153,6 +153,27 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         except Exception as e:
             yield f"data:{json.dumps({'error':str(e)})}\n\n"
 
+    # 多用户，重写DRF自动生成的接口
+    def get_object(self):
+        # return super().get_object()
+        obj = super().get_object()
+        if self.request.user.is_superuser:
+            return obj
+        if obj.user != self.request.user:
+            raise PermissionError("你没有权限操作这条日志")
+            """
+            return error_response：主动返回，流程结束
+            raise PermissionError：抛出异常，交给异常处理器
+
+                在 get_object 方法里，你不能用 return error_response，
+                因为 get_object 的调用方（DRF）期望它返回一个对象，而不是一个响应。
+                如果你在 get_object 里返回响应，DRF 会报错。
+                所以 get_object 里只能用 raise
+            """
+        return obj
+
+
+
     @action(detail=False, methods=['post'],url_path='stream')
     def stream_chat(self, request):
         """流式对话接口"""
@@ -195,25 +216,49 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         # 3. 正常保存
         serializer = self.get_serializer(data=log_data)
         if serializer.is_valid():
-            serializer.save()
+            serializer.save(user=request.user) # user=request.user 自动绑定用户
         #     return Response(serializer.data,status=status.HTTP_201_CREATED)
         # return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             return success_response(serializer.data, message="创建成功")
         return error_response("数据校验失败", code=400, data=serializer.errors)
         # return Response(serializer.data)
     
+    def get_queryset(self):
+        # return super().get_queryset() 原代码
+        """用户只能看到自己的日志，管理员可以看到所有"""
+        user = self.request.user
+        if user.is_superuser:
+            return AICallLog.objects.all()
+        return AICallLog.objects.filter(user=user)
+        
+
+
     @action(detail=False, methods=['get'], url_path='stats', permission_classes=[]) # 这个接口不需要登录
     def get_stats(self, request):
         """
         获取调用统计信息
         """
         # 1. 总体统计
+        """
         total = AICallLog.objects.count()
         success_count = AICallLog.objects.filter(success=True).count()
         fail_count = total - success_count
         success_rate = f"{(success_count / total * 100):.2f}%" if total > 0 else "0%"
         avg_duration = AICallLog.objects.aggregate(Avg('duration'))['duration__avg'] or 0
+        """
+        # 分用户
+        queryset = AICallLog.objects.filter(user=request.user) if not request.user.is_superuser else AICallLog.objects.all()
+        
+        total = queryset.count()
+        success_count = queryset.filter(success=True).count()
+        fail_count = total - success_count
+        success_rate = f"{(success_count / total * 100):.2f}%" if total > 0 else "0%"
+        avg_duration = queryset.aggregate(Avg('duration'))['duration__avg'] or 0
+        today = timezone.now().date()
+        today_start = datetime.combine(today, datetime.min.time())
+        today_logs = queryset.filter(call_time__gte=today_start)
 
+        """
         # 2. 今日统计
         today = timezone.now().date()
         today_start = datetime.combine(today, datetime.min.time())
@@ -224,7 +269,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         today_fail = today_total - today_success
         today_success_rate = f"{(today_success / today_total * 100):.2f}%" if today_total > 0 else "0%"
         today_avg_duration = today_logs.aggregate(Avg('duration'))['duration__avg'] or 0
-
+        """
         # 3. 组装返回数据
         data = {
             "total": total,
@@ -232,11 +277,11 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             "fail_count": fail_count,
             "success_rate": success_rate,
             "avg_duration": round(avg_duration, 2),
-            "today_count": today_total,
-            "today_success_count": today_success,
-            "today_fail_count": today_fail,
-            "today_success_rate": today_success_rate,
-            "today_avg_duration": round(today_avg_duration, 2),
+           # "today_count": today_total,
+            #"today_success_count": today_success,
+           # "today_fail_count": today_fail,
+            #"today_success_rate": today_success_rate,
+            #"today_avg_duration": round(today_avg_duration, 2),
         }
 
         return success_response(data)
@@ -246,16 +291,17 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     def update_by_json(self,request):
         """通过JSON里的id来更新"""
         log_id = request.data.get("id")
+        print(f"收到的 log_id: {log_id}, 类型: {type(log_id)}")  # ← 加这一行
         if not log_id:
             return Response({'error': '请提供 id'}, status=400)
         try: 
-            log = AICallLog.objects.get(id=log_id)
+            log = AICallLog.objects.get(id=log_id, user=request.user)
         except AICallLog.DoesNotExist:
             return Response({'error':'日志不存在'}, status=404)
         # 更新字段
         serializer = self.get_serializer(log,data = request.data,partial=True)
         if serializer.is_valid():
-            serializer.save()
+            serializer.save(user=request.user)
             return success_response(serializer.data, message="更新成功")
         return error_response("数据校验失败", code=400, data=serializer.errors)
 

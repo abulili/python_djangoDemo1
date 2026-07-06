@@ -1,11 +1,21 @@
 from django.db import models
-
+from django.contrib.auth.models import User
 # Create your models here. 定义数据结构（数据库表）
 # 写好了要用需要去settings的INSTALLED_APPS注册
 
 # 创建一个叫AICallLog的类，继承自 Django 的模型功能
 # 这么写就是继承，models.Model 是一个父类（Django 内置的），AICallLog 是一个子类（你自己写的）
 class AICallLog(models.Model):
+
+    # 关联用户
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        verbose_name="用户",
+        null=True,
+        blank=True
+    )
+
     """记录每次调用AI的日志"""
     # 定义列-列名prompt-类型TextField-可读的名字，方便在后台管理界面显示verbose_name
     prompt = models.TextField(verbose_name="用户输入")

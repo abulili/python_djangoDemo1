@@ -11,7 +11,7 @@ class AICallLogSerializer(serializers.ModelSerializer):
         # 用来读取是什么模型有哪些字段，需要序列化什么字段
         model = AICallLog
         fields = '__all__' # 包含所有字段, 也可以[]来指定字段读写
-        read_only_fields = ['id', 'call_time'] # 只读字段，前端可以查看，但不能修改，前端传了也会被忽略
+        read_only_fields = ['id', 'call_time', 'user'] # 只读字段，前端可以查看，但不能修改，前端传了也会被忽略
     def validate_prompt(self, value):
         """校验用户输入：至少2个字符，最多1000个字符"""
         if len(value) < 2:
