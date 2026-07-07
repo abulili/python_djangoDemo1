@@ -37,6 +37,8 @@ import json
 
 from rest_framework.permissions import IsAuthenticated
 
+from rest_framework.exceptions import PermissionDenied
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -161,7 +163,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         if self.request.user.is_superuser:
             return obj
         if obj.user != self.request.user:
-            raise PermissionError("你没有权限操作这条日志")
+            print(">>> 准备抛出 PermissionDenied！")
+            # PermissionDenied drf的异常类，这样才能被识别
+            raise PermissionDenied("你没有权限操作这条日志")
             """
             return error_response：主动返回，流程结束
             raise PermissionError：抛出异常，交给异常处理器
