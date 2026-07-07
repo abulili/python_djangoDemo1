@@ -2,6 +2,7 @@
 import logging
 from rest_framework.views import exception_handler
 from rest_framework.response import Response
+from rest_framework.exceptions import Throttled
 from django.http import Http404
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,13 @@ def custom_exception_handler(exc, context):
     """
     # 先调用DRF默认的异常处理
     response = exception_handler(exc, context)
+
+    if isinstance(exc,Throttled):
+        return Response({
+            "code":429,
+            "message":"请求过于频繁，请稍后再试",
+            "data":None
+        },status=429)
 
     # 如果DRF能处理，就用它的结果
     if response is not None:
