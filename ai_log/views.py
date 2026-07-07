@@ -155,6 +155,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
     # 多用户，重写DRF自动生成的接口
     def get_object(self):
+        print(">>> get_object 被调用了！")
         # return super().get_object()
         obj = super().get_object()
         if self.request.user.is_superuser:
@@ -286,10 +287,15 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
         return success_response(data)
 
-    # 自定义路由
+    # 自定义路由 --现在是单条修改伪批量，因为detail=False 是区分“批量操作”和“单条操作”的核心开关
+    """
+    detail=True	操作单条数据	/api/logs/{id}/update/
+    detail=False	操作数据集合	/api/logs/update/
+    """
+    """
     @action(detail=False,methods=['put'], url_path='update')
     def update_by_json(self,request):
-        """通过JSON里的id来更新"""
+        # 通过JSON里的id来更新 
         log_id = request.data.get("id")
         print(f"收到的 log_id: {log_id}, 类型: {type(log_id)}")  # ← 加这一行
         if not log_id:
@@ -304,6 +310,13 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             serializer.save(user=request.user)
             return success_response(serializer.data, message="更新成功")
         return error_response("数据校验失败", code=400, data=serializer.errors)
+    """
+    @action(detail=False, methods=['put'],url_path='batch-update')
+    def batch_update(self, request):
+        ids = request.data.get('ids',[])
+        update_data = request.data.get('update_data',{})
+        AICallLog.objects.filter(id__in=ids,user=request.user).update(**update_data)
+        return success_response({"update_count":len(ids)})
 
 def test_python(request):
     prompt_text = "帮我写个python计划"
