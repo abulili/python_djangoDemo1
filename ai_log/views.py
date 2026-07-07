@@ -39,6 +39,9 @@ from rest_framework.permissions import IsAuthenticated
 
 from rest_framework.exceptions import PermissionDenied
 
+from rest_framework.decorators import throttle_classes
+from .throttles import AICallThrottle
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -178,7 +181,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         return obj
 
 
-
+    @throttle_classes([AICallThrottle])
     @action(detail=False, methods=['post'],url_path='stream')
     def stream_chat(self, request):
         """流式对话接口"""
@@ -191,6 +194,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         return response
     # ========== 标准 CRUD 接口（ModelViewSet 自动生成） ==========
     # 你要实现的代码（AI 自动填 response）
+    @throttle_classes([AICallThrottle])
     def create(self, request):
         user_prompt = request.data.get('prompt')
 
@@ -319,6 +323,8 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     def batch_update(self, request):
         ids = request.data.get('ids',[])
         update_data = request.data.get('update_data',{})
+        # id__in 是 Django ORM 的字段查询语法，表示“ID 在某个列表里” 等价于 SQL 里的 IN 操作，用来批量筛选。
+        # ** 是 Python 的字典解包操作符
         AICallLog.objects.filter(id__in=ids,user=request.user).update(**update_data)
         return success_response({"update_count":len(ids)})
 

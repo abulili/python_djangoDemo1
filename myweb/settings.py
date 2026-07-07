@@ -161,7 +161,7 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework.authentication.SessionAuthentication',
         'rest_framework.authentication.BasicAuthentication',
-        'rest_framework_simplejwt.authentication.JWTAuthentication'
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.AllowAny',
@@ -175,6 +175,14 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.FormParser',
         'rest_framework.parsers.MultiPartParser',
     ),
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.UserRateThrottle',# 按用户限流
+        'rest_framework.throttling.AnonRateThrottle', # 按IP地址限流
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'user':'10/minute', # 每个用户每分钟最多 20 次请求
+        'anon':'1/minute'
+    },
     'EXCEPTION_HANDLER': 'ai_log.exceptions.custom_exception_handler',
     'UNICODE_JSON': True,  # ← 关键配置
     'COERCE_DECIMAL_TO_STRING': True,
