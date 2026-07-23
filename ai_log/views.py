@@ -184,7 +184,11 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     @throttle_classes([AICallThrottle])
     @action(detail=False, methods=['post'],url_path='stream')
     def stream_chat(self, request):
-        """流式对话接口"""
+        """流式对话接口
+        
+        因为流式返回，所以不能用DRF的Response，要使用StreamingHttpResponse
+        create只会对/ai_log/生效，只在DRF生效
+        """
         prompt = request.data.get('prompt')
         if not prompt:
             return error_response("请提供prompt",code=400)
@@ -255,8 +259,16 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         success_rate = f"{(success_count / total * 100):.2f}%" if total > 0 else "0%"
         avg_duration = AICallLog.objects.aggregate(Avg('duration'))['duration__avg'] or 0
         """
+        # 先处理匿名用户
+        if not request.user.is_authenticated:
+            return Response({
+                'message': '请登录后查看统计信息'
+            })
         # 分用户
-        queryset = AICallLog.objects.filter(user=request.user) if not request.user.is_superuser else AICallLog.objects.all()
+        if request.user.is_superuser:
+            queryset = AICallLog.objects.all()
+        else:
+            queryset = AICallLog.objects.filter(user=request.user) if not request.user.is_superuser else AICallLog.objects.all()
         
         total = queryset.count()
         success_count = queryset.filter(success=True).count()

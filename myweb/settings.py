@@ -65,7 +65,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'ai_log',
-    'rest_framework_simplejwt'
+    'rest_framework_simplejwt',
+    'users',
 ]
 
 MIDDLEWARE = [
@@ -180,8 +181,8 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle', # 按IP地址限流
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'user':'10/minute', # 每个用户每分钟最多 20 次请求
-        'anon':'1/minute'
+        'user':'20/minute', # 每个用户每分钟最多 20 次请求
+        'anon':'10/minute'
     },
     'EXCEPTION_HANDLER': 'ai_log.exceptions.custom_exception_handler',
     'UNICODE_JSON': True,  # ← 关键配置
