@@ -42,6 +42,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import throttle_classes
 from .throttles import AICallThrottle
 
+from django.core.cache import cache
 
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
@@ -110,6 +111,16 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     # 引入重试机制
     def call_company_ai2(self, prompt, retries = 3):
         """调用AI接口返回回答"""
+        # 用 prompt 作为缓存 key（取前50个字符避免太长）
+        cache_key = f"ai_response:{prompt[:50]}"
+        
+        # 查缓存
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            print(">>>> 命中 Redis 缓存！")
+            return cached_result,True
+        
+        # 缓存里没有，调用AI接口
         logger.info(f"调用 DeepSeek API，prompt: {prompt[:50]}...")
         client = OpenAI(api_key=settings.DEEPSEEK_API_KEY,base_url="https://api.deepseek.com")
         # print(os.getenv("DEEPSEEK_API_KEY"))
@@ -125,6 +136,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                     stream=False
                 )
                 ai_reply = response.choices[0].message.content
+                # 缓存结果(1小时过期)
+                cache.set(cache_key, ai_reply, timeout=3600)
+                print('>>>> 已缓存AI回复')
                 logger.info(f"DeepSeek API 调用成功，返回长度: {len(ai_reply)}")
                 return ai_reply,True
             except Exception as e:
@@ -142,6 +156,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     # 流式sse
     def stream_ai_response(self, prompt):
         """流式调用逐字返回"""
+       
         client = OpenAI(
             api_key=settings.DEEPSEEK_API_KEY,
             base_url="https://api.deepseek.com"
@@ -187,22 +202,93 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     @throttle_classes([AICallThrottle])
     @action(detail=False, methods=['post'],url_path='stream')
     def stream_chat(self, request):
+        prompt = request.data.get('prompt')
+        if not prompt:
+            return error_response("请提供prompt",code=400)
+        cache_key = f"ai_response:{prompt[:50]}"
+        # 查缓存
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            print(">>>> 命中 Redis 缓存！")
+            return cached_result,True
+        response = StreamingHttpResponse(self.stream_ai_response(prompt),content_type='text/event-stream')
+        response['Cache-Control'] = 'no-cache'
+        cache.set(cache_key, response, timeout=3600)
+        print('>>>> 已缓存AI回复')
+        """
+        流式响应本身不适合缓存。
+        流式响应的价值在于“实时生成”，而缓存的价值在于“复用结果”。这两个目标在流式场景下是矛盾的
+        """
+        return response
+    
+    def stream_ai_response_with_cache(self, prompt, cache_key):
+        """流式调用逐字返回，缓存结果"""
+        client = OpenAI(
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url="https://api.deepseek.com"
+        )
+        full_response = [] # 收集完整回复
+
+        try:
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role":"user", "content": prompt}],
+                stream=True
+            )
+            for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    full_response.append(content)
+                    yield f"data:{json.dumps({'content': content})}"
+            yield f"data:{json.dumps({'done': True})}\n\n"
+
+            # 流式结束后，把完整回复存入缓存
+            if full_response:
+                complete_reply = ''.join(full_response)
+                cache.set(cache_key, complete_reply, timeout=3600)
+                print('>>>> 已缓存AI回复')
+            yield f"data: {json.dumps({'done': True})}\n\n" 
+        except Exception as e:
+            yield f"data:{json.dumps({'error':str(e)})}\n\n"
+
+
+    @throttle_classes([AICallThrottle])
+    @action(detail=False, methods=['post'],url_path='stream2')
+    def stream_chat2(self, request):
         """流式对话接口
-        
         因为流式返回，所以不能用DRF的Response，要使用StreamingHttpResponse
         create只会对/ai_log/生效，只在DRF生效
         """
         prompt = request.data.get('prompt')
         if not prompt:
             return error_response("请提供prompt",code=400)
-        
-        response = StreamingHttpResponse(self.stream_ai_response(prompt),content_type='text/event-stream')
+        cache_key = f"ai_response:{prompt[:50]}"
+        # 查缓存
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            print(">>>> 命中 Redis 缓存！")
+            def fake_stream():
+                # 按字拆分
+                for char in cached_result:
+                    yield f"data:{json.dumps({'content': char})}\n\n"
+                yield f"data:{json.dumps({'done': True})}\n\n"
+            return StreamingHttpResponse(fake_stream(),content_type='text/event-stream')
+        # 缓存未命中
+        response = StreamingHttpResponse(self.stream_ai_response_with_cache(prompt,cache_key),content_type='text/event-stream')
         response['Cache-Control'] = 'no-cache'
+        print('>>>> 已缓存AI回复')
+        """
+        流式响应本身不适合缓存。
+        流式响应的价值在于“实时生成”，而缓存的价值在于“复用结果”。这两个目标在流式场景下是矛盾的
+        """
         return response
+    
+
     # ========== 标准 CRUD 接口（ModelViewSet 自动生成） ==========
     # 你要实现的代码（AI 自动填 response）
     @throttle_classes([AICallThrottle])
     def create(self, request):
+        print(">>>> create 被调用了！")
         user_prompt = request.data.get('prompt')
         logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
         if not user_prompt:
