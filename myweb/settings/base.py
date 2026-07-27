@@ -16,6 +16,8 @@ load_dotenv(BASE_DIR / '.env')
 # 项目的安全密钥，用于加密会话、密码、CSRF token等
 # 优先从 .env 文件读取，如果没读到就用默认值（生产环境必须改！）
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-default-key-change-me')
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
+
 """
 已有的应用
 """
@@ -116,4 +118,93 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'user': '60/minute',
     }
+}
+
+"""
+日志
+"""
+# myweb/settings/base.py（在 base.py 末尾加上这段）
+
+# 日志配置字典，定义了 Django 项目的日志记录行为
+LOGGING = {
+    # 日志配置版本号，固定为 1（目前只有一个版本）
+    'version': 1,
+    # 是否禁用已存在的日志记录器，设为 False 表示保留默认的日志记录器
+    'disable_existing_loggers': False,
+    
+    # 日志格式化器，定义日志输出的格式
+    'formatters': {
+        # 详细格式（verbose）：包含更多信息，适合生产环境
+        'verbose': {
+            # 格式模板：日志级别 时间 模块名 进程ID 线程ID 日志消息
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            # 格式风格：使用大括号 {} 作为占位符
+            'style': '{',
+        },
+        # 简单格式（simple）：只包含关键信息，适合开发调试
+        'simple': {
+            # 格式模板：日志级别 时间 模块名 日志消息
+            'format': '{levelname} {asctime} {module} {message}',
+            # 格式风格：使用大括号 {} 作为占位符
+            'style': '{',
+        },
+    },
+    
+    # 日志处理器，定义日志输出的目标（文件、控制台等）
+    'handlers': {
+        # 文件处理器（file）：将日志写入文件
+        'file': {
+            # 日志级别：只记录 INFO 及以上级别的日志（INFO, WARNING, ERROR, CRITICAL）
+            'level': 'INFO',
+            # 使用 RotatingFileHandler，支持日志文件自动轮转（防止单个文件过大）
+            'class': 'logging.handlers.RotatingFileHandler',
+            # 日志文件路径：项目根目录下的 logs/django.log
+            'filename': os.path.join(BASE_DIR, 'logs', 'django.log'),
+            # 单个日志文件最大大小：1024*1024*10 = 10MB
+            'maxBytes': 1024 * 1024 * 10,
+            # 保留的历史日志文件数量：30个（超过后自动删除最旧的）
+            'backupCount': 30,
+            # 使用 verbose 格式化器，输出详细格式
+            'formatter': 'verbose',
+        },
+        # 控制台处理器（console）：将日志输出到终端
+        'console': {
+            # 日志级别：记录 DEBUG 及以上级别的日志（最详细，适合开发）
+            'level': 'DEBUG',
+            # 使用 StreamHandler，输出到标准输出（控制台）
+            'class': 'logging.StreamHandler',
+            # 使用 simple 格式化器，输出简单格式
+            'formatter': 'simple',
+        },
+    },
+    
+    # 根日志记录器，所有未匹配到特定 logger 的日志都会使用这个配置
+    'root': {
+        # 使用的处理器：同时输出到控制台和文件
+        'handlers': ['console', 'file'],
+        # 日志级别：INFO 及以上
+        'level': 'INFO',
+    },
+    
+    # 特定模块的日志记录器配置，可以为不同模块设置不同的日志行为
+    'loggers': {
+        # Django 框架本身的日志记录器
+        'django': {
+            # 使用的处理器：只输出到文件
+            'handlers': ['file'],
+            # 日志级别：INFO 及以上
+            'level': 'INFO',
+            # 是否向上传递日志到父级记录器，设为 False 表示不再传递
+            'propagate': False,
+        },
+        # ai_log 应用的日志记录器
+        'ai_log': {
+            # 使用的处理器：同时输出到文件和控制台
+            'handlers': ['file', 'console'],
+            # 日志级别：DEBUG 及以上（最详细，方便开发调试）
+            'level': 'DEBUG',
+            # 是否向上传递日志，设为 False 表示不再传递
+            'propagate': False,
+        },
+    },
 }

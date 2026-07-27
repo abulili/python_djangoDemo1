@@ -42,6 +42,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import throttle_classes
 from .throttles import AICallThrottle
 
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -109,6 +110,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     # 引入重试机制
     def call_company_ai2(self, prompt, retries = 3):
         """调用AI接口返回回答"""
+        logger.info(f"调用 DeepSeek API，prompt: {prompt[:50]}...")
         client = OpenAI(api_key=settings.DEEPSEEK_API_KEY,base_url="https://api.deepseek.com")
         # print(os.getenv("DEEPSEEK_API_KEY"))
         
@@ -123,6 +125,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                     stream=False
                 )
                 ai_reply = response.choices[0].message.content
+                logger.info(f"DeepSeek API 调用成功，返回长度: {len(ai_reply)}")
                 return ai_reply,True
             except Exception as e:
                 # print(f"第{attempt + 1}次AI调用失败{e}")
@@ -201,7 +204,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     @throttle_classes([AICallThrottle])
     def create(self, request):
         user_prompt = request.data.get('prompt')
-
+        logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
         if not user_prompt:
             return Response(
                 {'error': '请提供prompt字段'},
