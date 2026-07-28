@@ -47,6 +47,9 @@ from django.core.cache import cache
 from .tasks import call_ai_task
 from celery.result import AsyncResult
 
+from django.db import connections
+from django.db.utils import OperationalError
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -482,6 +485,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         AICallLog.objects.filter(id__in=ids,user=request.user).update(**update_data)
         return success_response({"update_count":len(ids)})
 
+
+
+
 def test_python(request):
     prompt_text = "帮我写个python计划"
     duration_value = 0.5
@@ -516,3 +522,34 @@ def test_python1(request):
         "is_success_type": str(type(is_success)),
     })
 
+# 健康检查接口（项目运行状态和接口性能）
+def health_check(request):
+     # 检查数据库
+    db_healthy = True
+    try:
+        # 数据库连接检查
+        # ['default']：获取默认数据库（你在 settings.py 里配置的 DATABASES['default']）
+        # .cursor()：创建一个数据库游标，用来执行 SQL 查询语句
+        # 如果数据库连不上，.cursor() 会抛异常；如果连得上，就正常返回。所以用 try/except 包住这行，就能判断数据库是否可用。
+        connections['default'].cursor()
+    except OperationalError: # Django 数据库异常类，当数据库连接失败或操作出错时抛出。
+        db_healthy = False
+    # 检查redis缓存
+    redis_healthy = True
+    try:
+        # cache.set(key, value, timeout)：往缓存里存一个键值对,5s后自动删除
+        cache.set('health_check','ok',timeout=5)
+        if cache.get('health_check') != 'ok':
+            redis_healthy = False
+    except Exception:
+        redis_healthy = False
+        
+    status = 'healthy' if db_healthy and redis_healthy else 'unhealthy'
+    code = 200 if status == 'healthy' else 503
+
+    return JsonResponse({
+            "status": status,
+            'database': 'ok' if db_healthy else 'error',
+            'redis': 'ok' if redis_healthy else 'error',
+            'timestamp': timezone.now().isoformat(), # .isoformat()：转换成 ISO 8601 标准格式
+    }, status=code)
