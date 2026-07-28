@@ -208,3 +208,20 @@ LOGGING = {
         },
     },
 }
+
+# 模型列表
+AI_MODELS = {
+    'deepseek': {
+        'name': 'DeepSeek',
+        'api_key': os.getenv('DEEPSEEK_API_KEY'),
+        'base_url': 'https://api.deepseek.com',
+        'default_model': 'deepseek-v4-pro',
+    },
+    'agnes':{
+        'name': 'Agnes',
+        'api_key': os.getenv('AGNES_API_KEY'),
+        'base_url': 'https://apihub.agnes-ai.com/v1',
+        'default_model': 'agnes-2.0-flash',
+    }
+}
+DEFAULT_AI_MODEL = 'deepseek'
