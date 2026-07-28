@@ -44,6 +44,9 @@ from .throttles import AICallThrottle
 
 from django.core.cache import cache
 
+from .tasks import call_ai_task
+from celery.result import AsyncResult
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -164,7 +167,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-chat",
+                model="deepseek-v4-pro",
                 messages=[{"role":"user","content": prompt}],
                 stream=True
             )
@@ -231,7 +234,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-chat",
+                model="deepseek-v4-pro",
                 messages=[{"role":"user", "content": prompt}],
                 stream=True
             )
@@ -283,6 +286,44 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         """
         return response
     
+    # 从 URL 里提取一个名为 task_id 的参数，匹配一段不包含 / 和 . 的连续字符。
+    """
+    Celery 的 task_id 是 UUID（比如 550e8400-e29b-41d4-a716-446655440000），它包含 -，所以不能用 \w+（只匹配字母数字下划线），也不能用 [a-zA-Z0-9]+（不匹配 -）。
+    用 [^/.]+ 是“安全”的，因为它只排除了 / 和 .，其他字符都可以（包括 -、_、数字、字母）
+    """
+    @action(detail=False, methods=['get'],url_path='task/(?P<task_id>[^/.]+)')
+    def get_task_result(self, request, task_id=None):
+        task = AsyncResult(task_id)
+        # 用 state 判断任务状态
+        state = task.state
+
+        if state == 'PENDING':
+            return success_response({
+                'task_id':task_id,
+                'status': 'pending',
+                'message':'任务正在排队中'
+            })
+        elif state == 'FAILED':
+            return success_response({
+                'task_id':task_id,
+                'status': 'failed',
+                'message': str(task.info)
+            })
+        elif state == 'SUCCESS':
+            result=task.result
+            return success_response({
+                'task_id':task_id,
+                'status': 'success',
+                'message':result
+            })
+        else:
+            return success_response({
+                'task_id':task_id,
+                'status': 'unknown',
+                'message':'未知状态'
+            })
+
+
 
     # ========== 标准 CRUD 接口（ModelViewSet 自动生成） ==========
     # 你要实现的代码（AI 自动填 response）
@@ -290,12 +331,23 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     def create(self, request):
         print(">>>> create 被调用了！")
         user_prompt = request.data.get('prompt')
-        logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
+        # logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
         if not user_prompt:
             return Response(
                 {'error': '请提供prompt字段'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+         # 把任务丢给 Celery，不等待
+        task = call_ai_task.delay(user_prompt, request.user.id)
+
+        return success_response({
+            'task_id': task.id,
+            'status': 'processing',
+            'message': 'AI 正在处理中，请稍后通过 task_id 查询结果'
+        }, message="任务已提交")
+
+        """
         # 记录开始时间
         start_time = time.time()
         # 1. 调用公司 AI 接口
@@ -324,6 +376,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             return success_response(serializer.data, message="创建成功")
         return error_response("数据校验失败", code=400, data=serializer.errors)
         # return Response(serializer.data)
+        """
     
     def get_queryset(self):
         # return super().get_queryset() 原代码
