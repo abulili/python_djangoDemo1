@@ -191,6 +191,8 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         user_prompt = request.data.get('prompt')
         model_key = request.data.get('model',getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
         conversation_id = request.data.get('conversation_id')
+        template_name = request.data.get('template_name')
+        template_vars = request.data.get('template_vars')
         # logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
         if not user_prompt:
             return Response(
@@ -198,13 +200,18 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # 如果传了模板，用模板渲染
+        if template_name:
+            # 用户输入的prompt中作为变量之一
+            template_vars['user_input'] = user_prompt
+
         # 如果没有传conversation_id，生成一个新的
         if not conversation_id:
             import uuid
             conversation_id = str(uuid.uuid4())
 
         # 把任务丢给 Celery，不等待
-        task = call_ai_task4.delay(user_prompt, request.user.id, model_key, conversation_id)
+        task = call_ai_task4.delay(user_prompt, request.user.id, model_key, conversation_id, template_name, template_vars)
         
         # 返回任务ID和状态
         return success_response({

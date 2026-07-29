@@ -66,3 +66,20 @@ class AICallLog(models.Model):
         return f"{self.call_time} - {self.prompt[:20]}"
 
 # 创建app -> 定义模型 -> 执行迁移（数据库）-> 定义路由 -> 调用
+
+class PromptTemplate(models.Model):
+    """提示模板"""
+    name = models.CharField(max_length=50,unique=True, verbose_name="模板名称")
+    description = models.CharField(max_length=200, blank=True, verbose_name="模板描述")
+    content = models.TextField(verbose_name="模板内容") # 如 "你是{role}，请帮我{task}"
+    variables = models.JSONField(default=list, verbose_name="变量列表") # 如 ["role,task"]
+    is_active = models.BooleanField(verbose_name="是否启用",default=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+    class Meta:
+        verbose_name = "prompt模板"
+        verbose_name_plural = "prompt模板"
+        ordering = ['name']
+    
+    def __str__(self):
+        return f"{self.name}"

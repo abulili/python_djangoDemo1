@@ -143,22 +143,21 @@ def call_ai_task2(prompt, user_id, model_key=None):
         }
 
 @shared_task
-def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None):
+def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, template_name=None, template_vars=None):
     """
     异步调用AI模型，存结果到数据库。
     """
-    
 
-    logger.info(f"开始处理AI调用，会话ID：{conversation_id}，用户ID： {user_id}, prompt: {prompt[:50]}...")
+    logger.info(f"开始处理AI调用，会话ID：{conversation_id}用户ID： {user_id}, prompt: {prompt[:50]}...")
 
-    result, success = call_ai_service(prompt,model_key,conversation_id)
+    result, success = call_ai_service(prompt,model_key,conversation_id, template_name, template_vars)
     user = User.objects.get(id=user_id)
     try:
         log = AICallLog.objects.create(
             prompt = prompt,
             response = result['reply'],
             duration = result['duration'] if result.get('duration') else 0.0,
-            success=True,
+            success=success,
             user=user,
             model_name=model_key or 'deepseek',
             prompt_tokens=result.get('prompt_tokens', 0),

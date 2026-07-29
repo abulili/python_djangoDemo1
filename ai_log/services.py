@@ -4,6 +4,7 @@ from django.conf import settings
 from django.core.cache import cache
 import time
 import json
+from .models import PromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,19 @@ def calculate_cost(model_key, prompt_tokens,completion_tokens):
     cost = (prompt_tokens / 1000 * price['input']) + (completion_tokens / 1000 * price['output'])
     return round(cost, 4)
 
-def call_ai_service(prompt, model_key = None, conversation_id=None):
+def call_ai_service(prompt, model_key = None, conversation_id=None, template_name=None, template_vars=None):
     # AI调用服务（供ViewSet和Task调用）
+    
+    # 如果指定了模板，用模板渲染prompt
+    if template_name:
+        print('template_name', template_name)
+        print('template_vars', template_vars)
+        rendered_prompt = get_prompt(template_name, template_vars)
+        if rendered_prompt:
+            prompt = rendered_prompt
+        else:
+            logger.warning(f"模板{template_name}不存在或未启用")
+    print('prompt', prompt)
     if not model_key:
         model_key = getattr(settings,'DEFAULT_AI_MODEL', 'deepseek')
     model_config = settings.AI_MODELS.get(model_key)
@@ -127,3 +139,26 @@ def call_ai_service(prompt, model_key = None, conversation_id=None):
             'error': str(e),
             'reply':f"AI调用失败：{str(e)}"
         },False
+
+def get_prompt(template_name=None, variables=None):
+    """
+    根据模板名称和变量获取渲染后的 prompt
+    模板示例："你是{role}，请帮我{task}"
+    variables = {"role": "代码专家", "task": "写一个快速排序"}
+    → "你是代码专家，请帮我写一个快速排序"
+    """
+    try:
+        template = PromptTemplate.objects.get(name=template_name, is_active=True)
+        content = template.content
+        if variables:
+            content = content.format(**variables)
+        return content
+    except PromptTemplate.DoesNotExist:
+        return None
+
+def render_prompt_content(content, varibles=None):
+    # 直接渲染prompt内容，不查数据库
+    if varibles:
+        return content.format(**varibles)
+    return content
+    
