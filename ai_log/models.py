@@ -37,6 +37,7 @@ class AICallLog(models.Model):
     completion_tokens = models.IntegerField(verbose_name = "输出Token数",default=0)
     total_tokens = models.IntegerField(verbose_name = "总Token数",default=0)
     cost = models.FloatField(verbose_name="费用（元）", default=0)
+    conversation_id = models.CharField(max_length=50, verbose_name="会话ID", blank=True, null=True,default='')
 
     # 显示规则 在后台或命令行里打印这个对象时，会看到什么样的文字
     def __str__(self):

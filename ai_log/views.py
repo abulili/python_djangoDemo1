@@ -190,6 +190,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         print(">>>> create 被调用了！")
         user_prompt = request.data.get('prompt')
         model_key = request.data.get('model',getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
+        conversation_id = request.data.get('conversation_id')
         # logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
         if not user_prompt:
             return Response(
@@ -197,14 +198,20 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-         # 把任务丢给 Celery，不等待
-        task = call_ai_task4.delay(user_prompt, request.user.id, model_key)
+        # 如果没有传conversation_id，生成一个新的
+        if not conversation_id:
+            import uuid
+            conversation_id = str(uuid.uuid4())
+
+        # 把任务丢给 Celery，不等待
+        task = call_ai_task4.delay(user_prompt, request.user.id, model_key, conversation_id)
         
         # 返回任务ID和状态
         return success_response({
             'task_id': task.id,
             'status': 'processing',
-            'message': 'AI 正在处理中，请稍后通过 task_id 查询结果'
+            'message': 'AI 正在处理中，请稍后通过 task_id 查询结果',
+            'conversation_id': conversation_id
         }, message="任务已提交")
     
 
@@ -537,6 +544,18 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         AICallLog.objects.filter(id__in=ids,user=request.user).update(**update_data)
         return success_response({"update_count":len(ids)})
 
+    @action(detail=False, methods=['get'], url_path='conversation/(?P<conversation_id>[^/.]+)')
+    def get_conversation(self, request, conversation_id):
+        """
+        获取指定对话话的所有调用记录
+        """
+        from .services import get_coversation_history
+        history = get_coversation_history(conversation_id)
+        return success_response({
+            'conversation_id': conversation_id,
+            'history': history,
+            'total': len(history)
+        })
 
 
 

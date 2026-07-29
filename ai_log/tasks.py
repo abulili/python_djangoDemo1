@@ -143,15 +143,15 @@ def call_ai_task2(prompt, user_id, model_key=None):
         }
 
 @shared_task
-def call_ai_task4(prompt, user_id, model_key=None):
+def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None):
     """
     异步调用AI模型，存结果到数据库。
     """
     
 
-    logger.info(f"开始处理AI调用，用户ID： {user_id}, prompt: {prompt[:50]}...")
+    logger.info(f"开始处理AI调用，会话ID：{conversation_id}，用户ID： {user_id}, prompt: {prompt[:50]}...")
 
-    result, success = call_ai_service(prompt,model_key)
+    result, success = call_ai_service(prompt,model_key,conversation_id)
     user = User.objects.get(id=user_id)
     try:
         log = AICallLog.objects.create(
@@ -165,6 +165,7 @@ def call_ai_task4(prompt, user_id, model_key=None):
             completion_tokens=result.get('completion_tokens', 0),
             total_tokens=result.get('total_tokens', 0),
             cost=result.get('cost', 0.0),
+            conversation_id=conversation_id,
         )
         logger.info(f"AI调用成功， 日志ID： {log.id}")
         return {
@@ -175,7 +176,8 @@ def call_ai_task4(prompt, user_id, model_key=None):
             'duration': result['duration'] if result.get('duration') else 0.0,
             'model_name':model_key,
             'tokens': result.get('total_tokens',0),
-            'cost': result.get('cost', 0.0)
+            'cost': result.get('cost', 0.0),
+            'conversation_id': conversation_id,
         }
     except Exception as e:
         print('call_ai_task2 error',str(e))
@@ -190,6 +192,7 @@ def call_ai_task4(prompt, user_id, model_key=None):
                 success=False,
                 user=user,
                 model_name=model_key or 'deepseek',
+                conversation_id=conversation_id,
             )
         except:
             pass
