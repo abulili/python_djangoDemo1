@@ -32,6 +32,12 @@ class AICallLog(models.Model):
     duration = models.FloatField(verbose_name="耗时（秒）",default=0.0)
     success = models.BooleanField(verbose_name="是否成功",default=True)
 
+    # 新增字段
+    prompt_tokens = models.IntegerField(verbose_name = "输入Token数",default=0)
+    completion_tokens = models.IntegerField(verbose_name = "输出Token数",default=0)
+    total_tokens = models.IntegerField(verbose_name = "总Token数",default=0)
+    cost = models.FloatField(verbose_name="费用（元）", default=0)
+
     # 显示规则 在后台或命令行里打印这个对象时，会看到什么样的文字
     def __str__(self):
         # 显示“调用时间 - 用户输入的前20个字

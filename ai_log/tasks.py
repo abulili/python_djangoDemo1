@@ -5,6 +5,7 @@ from django.conf import settings
 from openai import OpenAI
 from .models import AICallLog
 from django.contrib.auth.models import User
+from .services import call_ai_service
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ def call_ai_task(prompt, user_id):
 
         start_time = time.time()
         response = client.chat.completions.create(
-            model="deepseek-v4-pro",
+            model="deepseek-v4-flash",
             messages=[
                 {"role": "user", "content": prompt}
             ],
@@ -141,3 +142,58 @@ def call_ai_task2(prompt, user_id, model_key=None):
             'error': str(e),
         }
 
+@shared_task
+def call_ai_task4(prompt, user_id, model_key=None):
+    """
+    异步调用AI模型，存结果到数据库。
+    """
+    
+
+    logger.info(f"开始处理AI调用，用户ID： {user_id}, prompt: {prompt[:50]}...")
+
+    result, success = call_ai_service(prompt,model_key)
+    user = User.objects.get(id=user_id)
+    try:
+        log = AICallLog.objects.create(
+            prompt = prompt,
+            response = result['reply'],
+            duration = result['duration'] if result.get('duration') else 0.0,
+            success=True,
+            user=user,
+            model_name=model_key or 'deepseek',
+            prompt_tokens=result.get('prompt_tokens', 0),
+            completion_tokens=result.get('completion_tokens', 0),
+            total_tokens=result.get('total_tokens', 0),
+            cost=result.get('cost', 0.0),
+        )
+        logger.info(f"AI调用成功， 日志ID： {log.id}")
+        return {
+            'status': 'success',
+            'log_id': log.id,
+            'prompt': prompt,
+            'response': result['reply'],
+            'duration': result['duration'] if result.get('duration') else 0.0,
+            'model_name':model_key,
+            'tokens': result.get('total_tokens',0),
+            'cost': result.get('cost', 0.0)
+        }
+    except Exception as e:
+        print('call_ai_task2 error',str(e))
+        logger.error(f"AI调用失败：{e}")
+        # 存一条失败的日志
+        try:
+            user = User.objects.get(id=user_id)
+            AICallLog.objects.create(
+                prompt=prompt,
+                response=f"AI调用失败：{result.get('reply',{str(e)})}",
+                duration=result.get('duration', 0.0) if result.get('duration') else 0.0,
+                success=False,
+                user=user,
+                model_name=model_key or 'deepseek',
+            )
+        except:
+            pass
+        return {
+            'status': 'error',
+            'error': str(e),
+        }

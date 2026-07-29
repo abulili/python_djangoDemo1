@@ -44,7 +44,7 @@ from .throttles import AICallThrottle
 
 from django.core.cache import cache
 
-from .tasks import call_ai_task,call_ai_task2
+from .tasks import call_ai_task,call_ai_task2, call_ai_task4
 from celery.result import AsyncResult
 
 from django.db import connections
@@ -97,7 +97,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         }
 
         data = {
-            "model": "deepseek-v4-pro",
+            "model": "deepseek-v4-flash",
             "messages": [{
                 "role": "user",
                 "content":prompt
@@ -134,7 +134,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         for attempt in range(retries):
             try: 
                 response = client.chat.completions.create(
-                    model="deepseek-v4-pro",
+                    model="deepseek-v4-flash",
                     messages=[{
                         "role":"user",
                         "content": prompt
@@ -182,6 +182,32 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             'message': 'AI 正在处理中，请稍后通过 task_id 查询结果'
         }, message="任务已提交")
     
+     # 引入模型选择
+    
+    @throttle_classes([AICallThrottle])
+    @action(detail=False, methods=['post'],url_path='call_company_ai4')
+    def create4(self, request):
+        print(">>>> create 被调用了！")
+        user_prompt = request.data.get('prompt')
+        model_key = request.data.get('model',getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
+        # logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
+        if not user_prompt:
+            return Response(
+                {'error': '请提供prompt字段'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+         # 把任务丢给 Celery，不等待
+        task = call_ai_task4.delay(user_prompt, request.user.id, model_key)
+        
+        # 返回任务ID和状态
+        return success_response({
+            'task_id': task.id,
+            'status': 'processing',
+            'message': 'AI 正在处理中，请稍后通过 task_id 查询结果'
+        }, message="任务已提交")
+    
+
 
     # 流式sse
     def stream_ai_response(self, prompt):
@@ -194,7 +220,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-v4-pro",
+                model="deepseek-v4-flash",
                 messages=[{"role":"user","content": prompt}],
                 stream=True
             )
@@ -261,7 +287,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-v4-pro",
+                model="deepseek-v4-flash",
                 messages=[{"role":"user", "content": prompt}],
                 stream=True
             )

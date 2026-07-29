@@ -215,7 +215,7 @@ AI_MODELS = {
         'name': 'DeepSeek',
         'api_key': os.getenv('DEEPSEEK_API_KEY'),
         'base_url': 'https://api.deepseek.com',
-        'default_model': 'deepseek-v4-pro',
+        'default_model': 'deepseek-v4-flash',
     },
     'agnes':{
         'name': 'Agnes',
