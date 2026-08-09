@@ -30,3 +30,9 @@ django-redis==5.4.0
 # ========== Celery 并发模式 ==========
 eventlet==0.41.1
 # 或使用 gevent：gevent==24.2.1
+
+
+httpx==0.24.0
+
+# ========== 解决跨域 ==========
+django-cors-headers==4.9.0

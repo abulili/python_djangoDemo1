@@ -67,9 +67,12 @@ INSTALLED_APPS = [
     'ai_log',
     'rest_framework_simplejwt',
     'users',
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',  # 放在最前面
+    'django.middleware.security.SecurityMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',

@@ -33,10 +33,13 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',  # SimpleJWT 库，用于 JWT 认证
     'ai_log',                    # 我们自己创建的 AI 日志应用
     'users',                     # 我们自己创建的用户应用
+    'corsheaders',               # 跨域请求中间件，用于处理跨域请求
 ]
 
 # 中间件列表，请求会按顺序经过这些中间件处理，响应会按相反顺序返回
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',  # 放在最前面 处理跨域
+    'django.middleware.security.SecurityMiddleware',
     'django.middleware.security.SecurityMiddleware',  # 安全相关，如 HTTPS 重定向、安全头
     'django.contrib.sessions.middleware.SessionMiddleware',  # 会话管理，给 request 添加 session 对象
     'django.middleware.common.CommonMiddleware',  # 通用中间件，处理 URL 规范化、语言设置等
@@ -225,3 +228,16 @@ AI_MODELS = {
     }
 }
 DEFAULT_AI_MODEL = 'deepseek'
+
+# 允许所有源（开发阶段用）
+# CORS_ALLOW_ALL_ORIGINS = True
+
+# 或者只允许特定源（更安全）
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    
+]
+
+# 允许携带凭证（如 cookies、authorization headers）
+CORS_ALLOW_CREDENTIALS = True
