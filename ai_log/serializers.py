@@ -34,7 +34,7 @@ class AICallLogSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("调用成功时，response不能为空")
         return data
 
-
+# 怎么转JSON，前端json校验
 class PromptTemplateSerializer(serializers.ModelSerializer):
     """Prompt template serializer."""
 
@@ -46,6 +46,6 @@ class PromptTemplateSerializer(serializers.ModelSerializer):
     def validate_variables(self, value):
         if not isinstance(value, list):
             raise serializers.ValidationError("variables must be a list")
-        if not all(isinstance(item, str) for item in value):
+        if not all(isinstance(item, str) for item in value): # 先看isinstance(item, str)判断是不是字符串，再for对每个元素判断，再all只有全部元素都是str才是True
             raise serializers.ValidationError("every variable name must be a string")
         return value

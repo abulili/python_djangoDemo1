@@ -80,23 +80,25 @@ class PromptTemplateViewSet(viewsets.ModelViewSet):
     queryset = PromptTemplate.objects.all()
     serializer_class = PromptTemplateSerializer
 
+    # 方法重写
     def get_queryset(self):
         queryset = PromptTemplate.objects.all()
         keyword = self.request.query_params.get('keyword')
         is_active = self.request.query_params.get('is_active')
         if keyword:
-            queryset = queryset.filter(name__icontains=keyword)
+            queryset = queryset.filter(name__icontains=keyword) # 名称__在其中（张 可能搜出 张三）
         if is_active in ['true', 'false']:
-            queryset = queryset.filter(is_active=is_active == 'true')
+            queryset = queryset.filter(is_active=is_active == 'true') # 主要针对特殊的情况，比如说None
         return queryset
 
+    # 预览模板渲染结果 
     @action(detail=True, methods=['post'], url_path='preview')
     def preview(self, request, pk=None):
         template = self.get_object()
         variables = request.data.get('variables') or {}
         try:
-            content = template.content.format(**variables)
-        except KeyError as e:
+            content = template.content.format(**variables) # variables解包以后填充content里面的变量
+        except KeyError as e: # 字典dict中不存在的键 {'name':'张三'}
             return error_response(f"缺少模板变量: {e.args[0]}", code=400)
         except Exception as e:
             return error_response(f"模板渲染失败: {str(e)}", code=400)
