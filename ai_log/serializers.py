@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import AICallLog
+from .models import AICallLog, PromptTemplate
 
 # 序列化器 把 AICallLog 对象转换成JSON，或者把JSON转换成 AICallLog 对象
 class AICallLogSerializer(serializers.ModelSerializer):
@@ -33,3 +33,19 @@ class AICallLogSerializer(serializers.ModelSerializer):
         if data.get('success') is True and not data.get('response'):
             raise serializers.ValidationError("调用成功时，response不能为空")
         return data
+
+
+class PromptTemplateSerializer(serializers.ModelSerializer):
+    """Prompt template serializer."""
+
+    class Meta:
+        model = PromptTemplate
+        fields = '__all__'
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_variables(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("variables must be a list")
+        if not all(isinstance(item, str) for item in value):
+            raise serializers.ValidationError("every variable name must be a string")
+        return value

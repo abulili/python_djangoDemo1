@@ -236,7 +236,9 @@ DEFAULT_AI_MODEL = 'deepseek'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    
+    "https://abulili.top",
+    "https://api.abulili.top",
+    "https://chat.abulili.top",
 ]
 
 # 允许携带凭证（如 cookies、authorization headers）

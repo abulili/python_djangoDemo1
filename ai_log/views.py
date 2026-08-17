@@ -5,8 +5,8 @@ import requests
 from django.http import JsonResponse
 
 from rest_framework import viewsets
-from ai_log.models import AICallLog
-from .serializers import AICallLogSerializer
+from ai_log.models import AICallLog, PromptTemplate
+from .serializers import AICallLogSerializer, PromptTemplateSerializer
 
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -75,6 +75,37 @@ class MyCustomAPIView(APIView):
 
 # 这个就生成了5个接口 增删改查（查全部查单条）
 # 需要对某个 Model 做标准的增删改查
+class PromptTemplateViewSet(viewsets.ModelViewSet):
+    """Prompt template management."""
+    queryset = PromptTemplate.objects.all()
+    serializer_class = PromptTemplateSerializer
+
+    def get_queryset(self):
+        queryset = PromptTemplate.objects.all()
+        keyword = self.request.query_params.get('keyword')
+        is_active = self.request.query_params.get('is_active')
+        if keyword:
+            queryset = queryset.filter(name__icontains=keyword)
+        if is_active in ['true', 'false']:
+            queryset = queryset.filter(is_active=is_active == 'true')
+        return queryset
+
+    @action(detail=True, methods=['post'], url_path='preview')
+    def preview(self, request, pk=None):
+        template = self.get_object()
+        variables = request.data.get('variables') or {}
+        try:
+            content = template.content.format(**variables)
+        except KeyError as e:
+            return error_response(f"缺少模板变量: {e.args[0]}", code=400)
+        except Exception as e:
+            return error_response(f"模板渲染失败: {str(e)}", code=400)
+        return success_response({
+            'template_id': template.id,
+            'content': content,
+        })
+
+
 class AICallLogViewSet(viewsets.ModelViewSet):
     """
     AI调用日志视图集
@@ -192,7 +223,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         model_key = request.data.get('model',getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
         conversation_id = request.data.get('conversation_id')
         template_name = request.data.get('template_name')
-        template_vars = request.data.get('template_vars')
+        template_vars = request.data.get('template_vars') or {}
         # logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
         if not user_prompt:
             return Response(
