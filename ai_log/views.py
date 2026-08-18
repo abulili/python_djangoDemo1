@@ -28,7 +28,7 @@ from .utils import success_response, error_response  # 导入工具函数
 import logging
 logger = logging.getLogger(__name__)
 
-from django.db.models import Count, Sum, Avg
+from django.db.models import Count, Sum, Avg, Max
 from django.utils import timezone
 from datetime import datetime, timedelta
 
@@ -588,15 +588,55 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     def get_conversation(self, request, conversation_id):
         """
         获取指定对话话的所有调用记录
+        已经知道某个 conversation_id 了，拿这个 ID 去查它的历史消息
         """
+        # 当前用户的情况
+        # 先在“当前用户可见的日志范围”里查有没有这个 conversation_id。
+        logs = self.get_queryset().filter(conversation_id=conversation_id).order_by('call_time')
+        if not logs.exists():
+            return error_response("对话不存在或没有权限访问", code=404, data={'conversation_id': conversation_id})
+
         from .services import get_coversation_history
         history = get_coversation_history(conversation_id)
+
+        
+        if not history:
+            history = []
+            for log in logs:
+                history.append({
+                    "role": "user",
+                    "content": log.prompt,
+                    "call_time": log.call_time
+                })
+
+                if log.response:
+                    history.append({
+                        "role": "assistant",
+                        "content": log.response,
+                        "call_time": log.call_time
+                    })
+
         return success_response({
             'conversation_id': conversation_id,
             'history': history,
             'total': len(history)
         })
-
+    
+    @action(detail=False, methods=['get'], url_path='conversations')
+    def get_conversations_ids(self, request):
+        """
+        获取所有对话话的 ID
+        """
+        queryset = self.get_queryset().exclude(conversation_id__isnull=True).exclude(conversation_id='')
+        conversations = (
+            queryset
+                .values('conversation_id')
+                .annotate(
+                    total=Count('id'),
+                    last_time = Max('call_time'))
+                .order_by('-last_time')
+        )
+        return success_response(list(conversations))
 
 
 def test_python(request):
