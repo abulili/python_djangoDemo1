@@ -120,7 +120,9 @@ REST_FRAMEWORK = {
     # 限流速率配置，'user': '60/minute' 表示每个用户每分钟最多请求 60 次
     'DEFAULT_THROTTLE_RATES': {
         'user': '60/minute',
-    }
+    },
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 10,
 }
 
 """
