@@ -50,6 +50,8 @@ from celery.result import AsyncResult
 from django.db import connections
 from django.db.utils import OperationalError
 
+from django.db.models.functions import TruncDate # 把 call_time 截成日期
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -549,19 +551,112 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         today = timezone.now().date()
         today_start = datetime.combine(today, datetime.min.time())
         today_logs = queryset.filter(call_time__gte=today_start)
-
+        # 从数据库中计算 total_tokens 字段的总和，如果计算结果为 None，则返回 0
         """
+        queryset.aggregate(Sum('total_tokens')) 
+            aggregate() 是 Django 的聚合方法，对整个查询集进行计算
+            Sum('total_tokens') 表示对 total_tokens 字段求和
+            返回一个字典
+        ['total_tokens__sum'] 
+        """
+        total_tokens = queryset.aggregate(Sum('total_tokens'))['total_tokens__sum'] or 0
+        total_cost = queryset.aggregate(Sum('cost'))['cost__sum'] or 0
+        avg_tokens = queryset.aggregate(Avg('total_tokens'))['total_tokens__avg'] or 0
+
+       
         # 2. 今日统计
         today = timezone.now().date()
         today_start = datetime.combine(today, datetime.min.time())
-        today_logs = AICallLog.objects.filter(call_time__gte=today_start)
-        
+        today_logs =queryset.filter(call_time__gte=today_start)
+        today_total = today_logs.count()
+        today_success = today_logs.filter(success=True).count()
+        today_cost = today_logs.aggregate(Sum('cost'))['cost__sum'] or 0
+        today_tokens = today_logs.aggregate(Sum('total_tokens'))['total_tokens__sum'] or 0
+        """
         today_total = today_logs.count()
         today_success = today_logs.filter(success=True).count()
         today_fail = today_total - today_success
         today_success_rate = f"{(today_success / today_total * 100):.2f}%" if today_total > 0 else "0%"
         today_avg_duration = today_logs.aggregate(Avg('duration'))['duration__avg'] or 0
         """
+
+        # 按模型分布
+        model_stats = list(
+            queryset
+            .values('model_name')
+            .annotate(
+                total=Count('id'),
+                success_count=Count('id', filter=Q(success=True)),
+                avg_duration=Avg('duration'),
+                total_tokens=Sum('total_tokens'),
+                total_cost=Sum('cost'),
+            ).order_by('-total')
+        )
+
+        # 近7天趋势
+        today = timezone.localdate()
+        start_date = today - timedelta(days=6)
+
+        start_datetime = timezone.make_aware(
+            datetime.combine(start_date, datetime.min.time())
+        )
+
+        daily_rows = list( 
+            queryset.exclude(call_time__isnull=True)
+                    .filter(call_time__gte=start_datetime) # gte：查询类型，表示 Greater Than or Equal（大于等于）
+                    .annotate(day=TruncDate('call_time')) # annotate给每条数据增加一个计算出来的新属性
+                    .values('day')
+                    .annotate(
+                        total=Count('id'),
+                        success_count=Count('id', filter=Q(success=True)),
+                        total_tokens=Sum('total_tokens'),
+                        total_cost=Sum('cost'),
+                    ).order_by('day')
+        )
+
+        daily_map = {}
+        for item in daily_rows:
+            day = item.get('day')
+            if not day:
+                continue
+            day_text = day.strftime("%Y-%m-%d")
+            daily_map[day_text] = {
+                "day": day_text,
+                "total": item["total"],
+                "success_count": item["success_count"],
+                "total_tokens": item["total_tokens"] or 0,
+                "total_cost": round(item["total_cost"] or 0, 4),
+            }
+
+        daily_list = []
+        for i in range(7):
+            current_tz = timezone.get_current_timezone()
+
+            day = start_date + timedelta(days=i)
+            day_text = day.strftime("%Y-%m-%d")
+
+            day_start = timezone.make_aware(
+                datetime.combine(day, datetime.min.time()),
+                current_tz
+            )
+            day_end = timezone.make_aware(
+                datetime.combine(day, datetime.max.time()),
+                current_tz
+            )
+
+            day_logs = queryset.filter(
+                call_time__gte=day_start,
+                call_time__lte=day_end
+            )
+
+            daily_list.append({
+                "day": day.strftime("%Y-%m-%d"),
+                "total": day_logs.count(),
+                "success_count": day_logs.filter(success=True).count(),
+                "total_tokens": day_logs.aggregate(Sum('total_tokens'))['total_tokens__sum'] or 0,
+                "total_cost": day_logs.aggregate(Sum('cost'))['cost__sum'] or 0
+            })
+
         # 3. 组装返回数据
         data = {
             "total": total,
@@ -569,6 +664,29 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             "fail_count": fail_count,
             "success_rate": success_rate,
             "avg_duration": round(avg_duration, 2),
+            "total_tokens": total_tokens,
+
+            "total_cost": round(total_cost, 4),
+            "avg_tokens": round(avg_tokens, 2),
+
+            "today_total": today_total,
+            "today_success": today_success,
+            "today_cost": round(today_cost, 4),
+            "today_tokens": today_tokens,
+
+            "model_stats": [
+                {
+                    "model_name": item["model_name"] or "unknown",
+                    "total": item["total"],
+                    "success_count": item["success_count"],
+                    "avg_duration": round(item["avg_duration"] or 0, 2),
+                    "total_tokens": item["total_tokens"] or 0,
+                    "total_cost": round(item["total_cost"] or 0, 4),
+                }
+                for item in model_stats
+            ],
+
+            "daily_stats": daily_list,
            # "today_count": today_total,
             #"today_success_count": today_success,
            # "today_fail_count": today_fail,
