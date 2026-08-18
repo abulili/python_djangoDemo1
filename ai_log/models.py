@@ -26,7 +26,7 @@ class AICallLog(models.Model):
     # 记录AI回答了什么
     response = models.TextField(verbose_name="AI返回", blank=True, default='')
     # CharField 是短字符串，需要指定 max_length， 默认值gpt-3.5
-    model_name = models.CharField(max_length=50,verbose_name="模型名称",default="gpt-3.5")
+    model_name = models.CharField(max_length=50,verbose_name="模型名称",default="deepseek")
     # auto_now_add=True 是个很方便的设置：当这条记录第一次被创建时，自动把当前时间填进去，并且之后不再更改
     call_time = models.DateTimeField(auto_now_add=True, verbose_name="调用时间")
     duration = models.FloatField(verbose_name="耗时（秒）",default=0.0)

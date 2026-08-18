@@ -17,7 +17,7 @@ class Migration(migrations.Migration):
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('prompt', models.TextField(verbose_name='用户输入')),
                 ('response', models.TextField(blank=True, null=True, verbose_name='AI返回')),
-                ('model_name', models.CharField(default='gpt-3.5', max_length=50, verbose_name='模型名称')),
+                ('model_name', models.CharField(default='deepseek', max_length=50, verbose_name='模型名称')),
                 ('call_time', models.DateTimeField(auto_now_add=True, verbose_name='调用时间')),
                 ('duration', models.FloatField(default=0.0, verbose_name='耗时（秒）')),
                 ('success', models.BooleanField(default=True, verbose_name='是否成功')),

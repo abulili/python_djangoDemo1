@@ -28,7 +28,7 @@ from .utils import success_response, error_response  # 导入工具函数
 import logging
 logger = logging.getLogger(__name__)
 
-from django.db.models import Count, Sum, Avg, Max
+from django.db.models import Count, Sum, Avg, Max, Q
 from django.utils import timezone
 from datetime import datetime, timedelta
 
@@ -482,11 +482,38 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         # return super().get_queryset() 原代码
-        """用户只能看到自己的日志，管理员可以看到所有"""
+        """
+        用户只能看到自己的日志，管理员可以看到所有
+        支持日志列表筛选
+        """
         user = self.request.user
         if user.is_superuser:
-            return AICallLog.objects.all()
-        return AICallLog.objects.filter(user=user)
+            queryset = AICallLog.objects.all()
+        else :
+            queryset = AICallLog.objects.filter(user=user)
+
+        keyword = self.request.query_params.get('keyword')
+        model_name = self.request.query_params.get('model_name')
+        success = self.request.query_params.get('success')
+        conversation_id = self.request.query_params.get('conversation_id')
+
+        if keyword:
+            queryset = queryset.filter(
+                # OR 查询 -逻辑运算符
+                Q(prompt__icontains=keyword) | Q(response__icontains=keyword)
+            )
+
+        if model_name:
+            queryset = queryset.filter(model_name__icontains=model_name)
+
+        if success in ['true', 'false']:
+            queryset = queryset.filter(success=success == 'true')
+        
+        if conversation_id:
+            queryset = queryset.filter(conversation_id=conversation_id)
+
+        return queryset
+        
         
 
 
