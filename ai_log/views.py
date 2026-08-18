@@ -81,6 +81,7 @@ class PromptTemplateViewSet(viewsets.ModelViewSet):
     """Prompt template management."""
     queryset = PromptTemplate.objects.all()
     serializer_class = PromptTemplateSerializer
+    pagination_class = None
 
     # 方法重写
     def get_queryset(self):
