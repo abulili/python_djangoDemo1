@@ -150,8 +150,12 @@ def get_prompt(template_name=None, variables=None):
     try:
         template = PromptTemplate.objects.get(name=template_name, is_active=True)
         content = template.content
-        if variables:
+        variables = variables or {}
+        try:
             content = content.format(**variables)
+        except KeyError as e:
+            missing_key = e.args[0]
+            raise ValueError(f"缺少模板变量: {missing_key}")
         return content
     except PromptTemplate.DoesNotExist:
         return None
