@@ -52,6 +52,8 @@ from django.db.utils import OperationalError
 
 from django.db.models.functions import TruncDate # 把 call_time 截成日期
 
+import uuid
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -243,7 +245,6 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
         # 如果没有传conversation_id，生成一个新的
         if not conversation_id:
-            import uuid
             conversation_id = str(uuid.uuid4())
 
         # 把任务丢给 Celery，不等待
@@ -389,6 +390,127 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         """
         return response
     
+    def stream_ai_response_with_history(self, prompt, model_key, conversation_id, user):
+        """
+        带 conversation_id 的流式 AI 调用
+        """
+        from .services import get_coversation_history, save_conversation_history, calculate_cost
+
+        if not model_key:
+            model_key = getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek')
+        
+        model_config = settings.AI_MODELS.get(model_key)
+        if model_config:
+            model_key = settings.DEFAULT_AI_MODEL
+            model_config = settings.AI_MODELS[model_key]
+            
+            history = get_coversation_history(conversation_id)
+            messages = history.copy()
+            messages.append({
+                "role": "user",
+                "content": prompt
+            })
+
+            client = OpenAI(
+                api_key = model_config['api_key'],
+                base_url = model_config['base_url']
+            )
+
+            start_time = time.time()
+            full_response = []
+
+            try: 
+                response = client.chat.completions.create(
+                   model=model_config['default_model'],
+                   messages=messages,
+                   stream=True
+                )
+
+                for chunk in response:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        content = chunk.choices[0].delta.content
+                        full_response.append(content)
+                        """
+                        json.dumps() 的作用是：
+                        把 Python dict 转成前端能 JSON.parse() 的 JSON 字符串。
+                        ensure_ascii=False 是为了中文不要变成：
+                        \u4f60\u597d
+
+                        \n\n: SSE 事件结束标志。SSE 一条消息通常用空行分隔。
+                        """
+                        yield f"data:{json.dumps({'content': content}, ensure_ascii=False)}\n\n"
+                ai_reply = ''.join(full_response)
+                duration = round(time.time() - start_time, 2)
+
+                messages.append({
+                    "role": "assistant",
+                    "content": ai_reply,
+                })
+
+                save_conversation_history(conversation_id, messages)
+
+                AICallLog.objects.create(
+                    prompt=prompt,
+                    response=ai_reply,
+                    duration=duration,
+                    success=True,
+                    user=user,
+                    model_name=model_key,
+                    conversation_id=conversation_id,
+                )
+
+                yield f"data:{json.dumps({'done': True}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                duration = round(time.time() - start_time, 2)
+                AICallLog.objects.create(
+                    prompt=prompt,
+                    response=str(e),
+                    duration=duration,
+                    success=False,
+                    user=user,
+                    model_name=model_key,
+                    conversation_id=conversation_id,
+                )
+                yield f"data:{json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+    
+    @throttle_classes([AICallThrottle])
+    @action(detail=False, methods=['post'], url_path='stream3')
+    def stream_chat3(self, request):
+        """
+        支持 conversation_id 和上下文历史的流式对话
+        """
+        prompt = request.data.get('prompt')
+        model_key = request.data.get('model', getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
+        conversation_id = request.data.get('conversation_id')
+        
+        if not prompt:
+            return error_response("请提供 prompt", code=400)
+        
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
+        
+        def event_stream():
+            # 分成两次发，先发conversation_id
+            yield f"data: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+
+            # 里面会不断 yield data:
+            yield from self.stream_ai_response_with_history(
+                prompt=prompt,
+                model_key=model_key,
+                conversation_id=conversation_id,
+                user=request.user
+            )
+        response = StreamingHttpResponse(
+            event_stream(),
+            content_type='text/event-stream'
+        )
+        response['Cache-Control'] = 'no-cache'
+        # 给 Nginx 看的响应头。 不要把后端流式内容攒一大坨再返回，尽量实时推给浏览器。
+        # 如果 Nginx 开了 buffering，后端虽然在 yield，但浏览器可能等一会儿才看到一整段。加这个头，是为了 SSE 更像实时输出。
+        response['X-Accel-Buffering'] = 'no'
+
+        return response
+
     # 从 URL 里提取一个名为 task_id 的参数，匹配一段不包含 / 和 . 的连续字符。
     """
     Celery 的 task_id 是 UUID（比如 550e8400-e29b-41d4-a716-446655440000），它包含 -，所以不能用 \w+（只匹配字母数字下划线），也不能用 [a-zA-Z0-9]+（不匹配 -）。
