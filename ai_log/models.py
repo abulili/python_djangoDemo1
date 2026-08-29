@@ -83,3 +83,47 @@ class PromptTemplate(models.Model):
     
     def __str__(self):
         return f"{self.name}"
+
+class Conversation(models.Model):
+    """AI会话"""
+    user = models.ForeignKey(User,on_delete=models.CASCADE,verbose_name="用户")
+    conversation_id = models.CharField(max_length=64, verbose_name="会话ID", unique=True,blank=True)
+    title = models.CharField(max_length=100, blank=True, default='', verbose_name="会话标题")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        verbose_name = "AI会话"
+        verbose_name_plural = "AI会话"
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return self.title or self.conversation_id
+
+class ConversationMessage(models.Model):
+    """AI会话消息"""
+    ROLE_CHOICES = (
+        ('user', '用户'),
+        ('assistant', '助手'),
+        ('system', '系统'),
+    )
+
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name="message",
+        verbose_name="会话"
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, verbose_name="角色")
+    content = models.TextField(verbose_name="消息内容")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    class Meta:
+        verbose_name = "AI会话消息"
+        verbose_name_plural = "AI会话消息"
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.role} - {self.content[:20]}"
+    
+    

@@ -400,7 +400,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             model_key = getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek')
         
         model_config = settings.AI_MODELS.get(model_key)
-        if model_config:
+        if not model_config:
             model_key = settings.DEFAULT_AI_MODEL
             model_config = settings.AI_MODELS[model_key]
             
