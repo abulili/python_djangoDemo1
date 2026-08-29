@@ -423,10 +423,27 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 response = client.chat.completions.create(
                    model=model_config['default_model'],
                    messages=messages,
-                   stream=True
+                   stream=True,
+                   stream_options={"include_usage": True}
                 )
 
+                usage = None
+                prompt_tokens = 0
+                completion_tokens = 0
+                total_tokens = 0
                 for chunk in response:
+                    """
+                    第 3 个 chunk：很高兴
+                    ...
+                    最后 1 个 chunk：usage 统计信息
+                    """
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage = chunk.usage
+                        prompt_tokens = usage.prompt_tokens or 0
+                        completion_tokens = usage.completion_tokens or 0
+                        total_tokens = usage.total_tokens or 0
+                        continue
+
                     if chunk.choices and chunk.choices[0].delta.content:
                         content = chunk.choices[0].delta.content
                         full_response.append(content)
@@ -449,6 +466,14 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
                 save_conversation_history(conversation_id, messages)
 
+                from .services import calculate_cost
+                cost = calculate_cost(
+                    model_key,
+                    prompt_tokens,
+                    completion_tokens,
+                    usage=usage,
+                    real_model_name=model_config["default_model"],
+                )
                 AICallLog.objects.create(
                     prompt=prompt,
                     response=ai_reply,
@@ -457,6 +482,10 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                     user=user,
                     model_name=model_key,
                     conversation_id=conversation_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cost=cost,
                 )
 
                 yield f"data:{json.dumps({'done': True}, ensure_ascii=False)}\n\n"
