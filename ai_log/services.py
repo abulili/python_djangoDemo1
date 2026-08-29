@@ -5,6 +5,8 @@ from django.core.cache import cache
 import time
 import json
 from .models import PromptTemplate
+from decimal import Decimal, ROUND_HALF_UP
+from datetime import timezone as datetime_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +29,90 @@ def save_conversation_history(conversation_id, messages):
         messages = messages[-MAX_HISTORY:]
     cache.set(key, json.dumps(messages),timeout=3600*24) # 保留24小时
 
+DEEPSEEK_PRICING = {
+    "deepseek": { # 默认是deepseek-v4-flash
+        "off_peak": {
+            "cache_hit_input": Decimal("0.05"),
+            "cache_miss_input": Decimal("1.5"),
+            "output": Decimal("4.5"),
+        },
+        "peak": {
+            "cache_hit_input": Decimal("0.10"),
+            "cache_miss_input": Decimal("3.0"),
+            "output": Decimal("9.0"),
+        },
+    },
+    "deepseek-v4-flash": {
+        "off_peak": {
+            "cache_hit_input": Decimal("0.05"),
+            "cache_miss_input": Decimal("1.5"),
+            "output": Decimal("4.5"),
+        },
+        "peak": {
+            "cache_hit_input": Decimal("0.10"),
+            "cache_miss_input": Decimal("3.0"),
+            "output": Decimal("9.0"),
+        },
+    },
+    "deepseek-v4-pro": {
+        "off_peak": {
+            "cache_hit_input": Decimal("0.15"),
+            "cache_miss_input": Decimal("4.5"),
+            "output": Decimal("13.5"),
+        },
+        "peak": {
+            "cache_hit_input": Decimal("0.30"),
+            "cache_miss_input": Decimal("9.0"),
+            "output": Decimal("27.0"),
+        },
+    },
+}
 
+def get_usage_value(usage, field_name, default=0):
+    if not usage:
+        return default
+    if isinstance(usage, dict):
+        return usage.get(field_name, default) or default
 
-def calculate_cost(model_key, prompt_tokens,completion_tokens):
+    return getattr(usage, field_name, default) or default
+
+def get_deepseek_price_period(now=None):
+    from django.utils import timezone
+
+    now = now or timezone.now()
+    beijing_now = now.astimezone(datetime_timezone.utc).astimezone()
+
+    hour = beijing_now.hour
+
+    if 9 <= hour < 12 or 14 <= hour < 18:
+        return 'peak'
+    else:
+        return 'off_peak'
+
+def calculate_cost(model_key, prompt_tokens,completion_tokens,usage=None, real_model_name=None):
     # 根据模型计算费用
-    pricing = {
-        'deepseek':{ 'input': 0.001, 'output': 0.002 },
-        # 'agnes':{ 'input': 0.00021, 'output': 0.00105 },
-        'agnes':{ 'input': 0.0, 'output': 0.0 },
-    }
-    price = pricing.get(model_key, pricing.get('deepseek'))
-    cost = (prompt_tokens / 1000 * price['input']) + (completion_tokens / 1000 * price['output'])
-    return round(cost, 4)
+    if model_key == 'agnes':
+        return 0.0
+    if model_key == 'deepseek':
+        model_name = real_model_name or "deepseek-v4-flash"
+        price_config = DEEPSEEK_PRICING.get(model_name, DEEPSEEK_PRICING.get("deepseek-v4-flash"))
+        
+        period = get_deepseek_price_period()
+        price = price_config[period]
+
+        cache_hit_tokens = get_usage_value(usage, 'prompt_cache_hit_tokens', 0)
+        cache_miss_tokens = get_usage_value(usage, 'prompt_cache_miss_tokens', 0)
+        if cache_hit_tokens + cache_miss_tokens == 0:
+            cache_miss_tokens = prompt_tokens
+        
+        cost = (
+            Decimal(cache_hit_tokens) / Decimal(1000000) * price["cache_hit_input"] + Decimal(cache_miss_tokens) / Decimal(1000000) * price["cache_miss_input"]
+            + Decimal(completion_tokens) / Decimal(1000000) * price["output"]
+        )
+
+        return float(cost.quantize(Decimal('0.000001'), rounding=ROUND_HALF_UP))
+    return 0.0
+
 
 def call_ai_service(prompt, model_key = None, conversation_id=None, template_name=None, template_vars=None):
     # AI调用服务（供ViewSet和Task调用）
@@ -117,7 +191,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
         prompt_tokens = usage.prompt_tokens if usage else 0
         completion_tokens = usage.completion_tokens if usage else 0
         total_tokens = usage.total_tokens if usage else 0
-        cost = calculate_cost(model_key, prompt_tokens,completion_tokens)
+        cost = calculate_cost(model_key, prompt_tokens,completion_tokens,usage=usage,real_model_name=model_config["default_model"],)
 
         cache.set(cache_key, ai_reply, timeout = 3600)
         logger.info(f"AI调用成功，模型：{model_key}，总Token：{total_tokens}")
