@@ -390,11 +390,17 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         """
         return response
     
+    # 可以不加这个括号，因为只是 Python 的多行 import 写法
     def stream_ai_response_with_history(self, prompt, model_key, conversation_id, user):
         """
         带 conversation_id 的流式 AI 调用
         """
-        from .services import get_coversation_history, save_conversation_history, calculate_cost
+        from .services import (
+            get_coversation_history,
+            save_conversation_history,
+            save_conversation_messages_to_db,
+            calculate_cost,
+        )
 
         if not model_key:
             model_key = getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek')
@@ -404,103 +410,110 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             model_key = settings.DEFAULT_AI_MODEL
             model_config = settings.AI_MODELS[model_key]
             
-            history = get_coversation_history(conversation_id)
-            messages = history.copy()
-            messages.append({
-                "role": "user",
-                "content": prompt
-            })
+        history = get_coversation_history(conversation_id)
+        messages = history.copy()
+        messages.append({
+            "role": "user",
+            "content": prompt
+        })
 
-            client = OpenAI(
-                api_key = model_config['api_key'],
-                base_url = model_config['base_url']
+        client = OpenAI(
+            api_key = model_config['api_key'],
+            base_url = model_config['base_url']
+        )
+
+        start_time = time.time()
+        full_response = []
+
+        try: 
+            response = client.chat.completions.create(
+                model=model_config['default_model'],
+                messages=messages,
+                stream=True,
+                stream_options={"include_usage": True}
             )
 
-            start_time = time.time()
-            full_response = []
+            usage = None
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
+            for chunk in response:
+                """
+                第 3 个 chunk：很高兴
+                ...
+                最后 1 个 chunk：usage 统计信息
+                """
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage = chunk.usage
+                    prompt_tokens = usage.prompt_tokens or 0
+                    completion_tokens = usage.completion_tokens or 0
+                    total_tokens = usage.total_tokens or 0
+                    continue
 
-            try: 
-                response = client.chat.completions.create(
-                   model=model_config['default_model'],
-                   messages=messages,
-                   stream=True,
-                   stream_options={"include_usage": True}
-                )
-
-                usage = None
-                prompt_tokens = 0
-                completion_tokens = 0
-                total_tokens = 0
-                for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    full_response.append(content)
                     """
-                    第 3 个 chunk：很高兴
-                    ...
-                    最后 1 个 chunk：usage 统计信息
+                    json.dumps() 的作用是：
+                    把 Python dict 转成前端能 JSON.parse() 的 JSON 字符串。
+                    ensure_ascii=False 是为了中文不要变成：
+                    \u4f60\u597d
+
+                    \n\n: SSE 事件结束标志。SSE 一条消息通常用空行分隔。
                     """
-                    if hasattr(chunk, "usage") and chunk.usage:
-                        usage = chunk.usage
-                        prompt_tokens = usage.prompt_tokens or 0
-                        completion_tokens = usage.completion_tokens or 0
-                        total_tokens = usage.total_tokens or 0
-                        continue
+                    yield f"data:{json.dumps({'content': content}, ensure_ascii=False)}\n\n"
+            ai_reply = ''.join(full_response)
+            duration = round(time.time() - start_time, 2)
 
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        content = chunk.choices[0].delta.content
-                        full_response.append(content)
-                        """
-                        json.dumps() 的作用是：
-                        把 Python dict 转成前端能 JSON.parse() 的 JSON 字符串。
-                        ensure_ascii=False 是为了中文不要变成：
-                        \u4f60\u597d
+            messages.append({
+                "role": "assistant",
+                "content": ai_reply,
+            })
 
-                        \n\n: SSE 事件结束标志。SSE 一条消息通常用空行分隔。
-                        """
-                        yield f"data:{json.dumps({'content': content}, ensure_ascii=False)}\n\n"
-                ai_reply = ''.join(full_response)
-                duration = round(time.time() - start_time, 2)
+            save_conversation_history(conversation_id, messages)
 
-                messages.append({
-                    "role": "assistant",
-                    "content": ai_reply,
-                })
+            # 失败的不保存
+            save_conversation_messages_to_db(
+                conversation_id=conversation_id,
+                user=user,
+                user_content=prompt,
+                assistant_content=ai_reply,
+            )
 
-                save_conversation_history(conversation_id, messages)
+            cost = calculate_cost(
+                model_key,
+                prompt_tokens,
+                completion_tokens,
+                usage=usage,
+                real_model_name=model_config["default_model"],
+            )
+            AICallLog.objects.create(
+                prompt=prompt,
+                response=ai_reply,
+                duration=duration,
+                success=True,
+                user=user,
+                model_name=model_key,
+                conversation_id=conversation_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                cost=cost,
+            )
 
-                from .services import calculate_cost
-                cost = calculate_cost(
-                    model_key,
-                    prompt_tokens,
-                    completion_tokens,
-                    usage=usage,
-                    real_model_name=model_config["default_model"],
-                )
-                AICallLog.objects.create(
-                    prompt=prompt,
-                    response=ai_reply,
-                    duration=duration,
-                    success=True,
-                    user=user,
-                    model_name=model_key,
-                    conversation_id=conversation_id,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    cost=cost,
-                )
-
-                yield f"data:{json.dumps({'done': True}, ensure_ascii=False)}\n\n"
-            except Exception as e:
-                duration = round(time.time() - start_time, 2)
-                AICallLog.objects.create(
-                    prompt=prompt,
-                    response=str(e),
-                    duration=duration,
-                    success=False,
-                    user=user,
-                    model_name=model_key,
-                    conversation_id=conversation_id,
-                )
-                yield f"data:{json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            yield f"data:{json.dumps({'done': True}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            duration = round(time.time() - start_time, 2)
+            AICallLog.objects.create(
+                prompt=prompt,
+                response=str(e),
+                duration=duration,
+                success=False,
+                user=user,
+                model_name=model_key,
+                conversation_id=conversation_id,
+            )
+            yield f"data:{json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
     
     @throttle_classes([AICallThrottle])
     @action(detail=False, methods=['post'], url_path='stream3')

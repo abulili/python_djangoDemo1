@@ -54,7 +54,7 @@ def save_conversation_messages_to_db(conversation_id, user, user_content, assist
     """
     conversation, created = Conversation.objects.get_or_create(
         conversation_id=conversation_id, # 查找条件（放在外面的就是查找条件，如果不加default，直接就是）
-        default={ # defaults 只在“创建新会话”时生效： 创建时才用的默认值
+        defaults={ # defaults 只在“创建新会话”时生效： 创建时才用的默认值
             "user": user,
             "title": title,
         }
@@ -64,16 +64,16 @@ def save_conversation_messages_to_db(conversation_id, user, user_content, assist
     
     if not conversation.title and title:
         conversation.title = title
-        Conversation.save(update_fields=['title', 'update_at'])
+        conversation.save(update_fields=['title', 'update_at'])
 
     ConversationMessage.objects.create(
-        conversation=Conversation,
+        conversation=conversation,
         role='user',
         content=user_content or "",
     )
 
     ConversationMessage.objects.create(
-        conversation=Conversation,
+        conversation=conversation,
         role='assistant',
         content=assistant_content or "",
     )
