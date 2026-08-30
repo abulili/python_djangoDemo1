@@ -410,7 +410,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             model_key = settings.DEFAULT_AI_MODEL
             model_config = settings.AI_MODELS[model_key]
             
-        history = get_coversation_history(conversation_id)
+        history = get_coversation_history(conversation_id, user=user)
         messages = history.copy()
         messages.append({
             "role": "user",

@@ -13,14 +13,50 @@ logger = logging.getLogger(__name__)
 # 最大保留消息数
 MAX_HISTORY = 20
 
-def get_coversation_history(conversation_id):
+def get_coversation_history(conversation_id, user=None):
+    """
+    获取会话上下文：
+    1. 优先从 Redis 读，速度快
+    2. Redis 没有时，从数据库恢复最近 MAX_HISTORY 条
+    3. 恢复后写回 Redis，方便下一次请求
+    """
+    if not conversation_id:
+        return []
+
     # 从redis获取对话历史
     key = f"coversation:{conversation_id}"
     history = cache.get(key)
     print('history', history)
     if history:
         return json.loads(history)
-    return []
+
+    if not user:
+        return []
+    
+    # filter(...) 返回的是一个查询集合，不是单个对象
+    conversation = Conversation.objects.filter(
+        conversation_id=conversation_id,
+        user=user, # 从 Redis 读的时候，只需要 conversation_id。但从数据库兜底时，必须加用户限制：
+    ).first()
+    # 不用 .first() 的话，conversation 是一个 QuerySet，你不能直接当成一条会话来用。
+    if not conversation:
+        return []
+
+    messages = list(
+        conversation.messages
+                    .order_by('-created_at')[:MAX_HISTORY] # 短横线 - 表示倒序,不加-就是正序 相当于[:20]
+                    .values("role", "content")
+    )
+
+    messages.reverse()
+
+    cache.set(
+        key,
+        json.dumps(messages, ensure_ascii=False),
+        timeout=3600*24
+    )
+
+    return messages
 
 def save_conversation_history(conversation_id, messages):
     # 保留对话历史到redis，保留最近的MAX_HISTORY条
