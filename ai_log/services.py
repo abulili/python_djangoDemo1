@@ -4,7 +4,7 @@ from django.conf import settings
 from django.core.cache import cache
 import time
 import json
-from .models import PromptTemplate
+from .models import PromptTemplate,Conversation, ConversationMessage
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import timezone as datetime_timezone
 
@@ -28,6 +28,60 @@ def save_conversation_history(conversation_id, messages):
     if len(messages) > MAX_HISTORY:
         messages = messages[-MAX_HISTORY:]
     cache.set(key, json.dumps(messages),timeout=3600*24) # 保留24小时
+
+def save_conversation_messages_to_db(conversation_id, user, user_content, assistant_content):
+    """
+    一轮对话保存到数据库
+    """
+    if not conversation_id or not user:
+        return None
+    
+    title = user_content[:30] if user_content else ""
+
+    # 如果这个 conversation_id 对应的会话已经存在，就拿出来；如果不存在，就创建一个新的
+    """
+    get_or_create 等价于：
+    try:
+        conversation = Conversation.objects.get(conversation_id=conversation_id)
+        created = False
+    except Conversation.DoesNotExist:
+        conversation = Conversation.objects.create(
+            conversation_id=conversation_id,
+            user=user,
+            title=title,
+        )
+        created = True
+    """
+    conversation, created = Conversation.objects.get_or_create(
+        conversation_id=conversation_id, # 查找条件（放在外面的就是查找条件，如果不加default，直接就是）
+        default={ # defaults 只在“创建新会话”时生效： 创建时才用的默认值
+            "user": user,
+            "title": title,
+        }
+    )
+    if conversation.user_id != user.id:
+        raise PermissionError("无权访问该对话")
+    
+    if not conversation.title and title:
+        conversation.title = title
+        Conversation.save(update_fields=['title', 'update_at'])
+
+    ConversationMessage.objects.create(
+        conversation=Conversation,
+        role='user',
+        content=user_content or "",
+    )
+
+    ConversationMessage.objects.create(
+        conversation=Conversation,
+        role='assistant',
+        content=assistant_content or "",
+    )
+
+    conversation.save(update_fields=['updated_at'])
+
+    return conversation
+    
 
 DEEPSEEK_PRICING = {
     "deepseek": { # 默认是deepseek-v4-flash
