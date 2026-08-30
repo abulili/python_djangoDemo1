@@ -54,6 +54,8 @@ from django.db.models.functions import TruncDate # 把 call_time 截成日期
 
 import uuid
 
+from .models import AICallLog, PromptTemplate, Conversation, ConversationMessage
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -937,16 +939,32 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         """
         获取所有对话话的 ID
         """
-        queryset = self.get_queryset().exclude(conversation_id__isnull=True).exclude(conversation_id='')
-        conversations = (
-            queryset
-                .values('conversation_id')
-                .annotate(
-                    total=Count('id'),
-                    last_time = Max('call_time'))
-                .order_by('-last_time')
-        )
-        return success_response(list(conversations))
+        # queryset = self.get_queryset().exclude(conversation_id__isnull=True).exclude(conversation_id='')
+        # conversations = (
+        #     queryset
+        #         .values('conversation_id')
+        #         .annotate(
+        #             total=Count('id'),
+        #             last_time = Max('call_time'))
+        #         .order_by('-last_time')
+        # )
+        # return success_response(list(conversations))
+        conversations = Conversation.objects.filter(
+            user = request.user,
+        ).order_by('-updated_at')
+
+        data = [
+            {
+                "id": item.id,
+                "conversation_id": item.conversation_id,
+                "title": item.title or item.conversation_id,
+                "created_at": item.created_at,
+                "updated_at": item.updated_at,
+                "message_count": item.messages.count(),
+            }
+            for item in conversations
+        ]
+        return success_response(data)
 
 
 def test_python(request):
