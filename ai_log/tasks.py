@@ -149,9 +149,9 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
     """
 
     logger.info(f"开始处理AI调用，会话ID：{conversation_id}用户ID： {user_id}, prompt: {prompt[:50]}...")
-
-    result, success = call_ai_service(prompt,model_key,conversation_id, template_name, template_vars)
     user = User.objects.get(id=user_id)
+    result, success = call_ai_service(prompt,model_key,conversation_id, template_name, template_vars, user=user)
+    
     try:
         log = AICallLog.objects.create(
             prompt = prompt,

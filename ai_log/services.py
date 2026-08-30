@@ -100,7 +100,7 @@ def save_conversation_messages_to_db(conversation_id, user, user_content, assist
     
     if not conversation.title and title:
         conversation.title = title
-        conversation.save(update_fields=['title', 'update_at'])
+        conversation.save(update_fields=['title', 'updated_at'])
 
     ConversationMessage.objects.create(
         conversation=conversation,
@@ -204,7 +204,7 @@ def calculate_cost(model_key, prompt_tokens,completion_tokens,usage=None, real_m
     return 0.0
 
 
-def call_ai_service(prompt, model_key = None, conversation_id=None, template_name=None, template_vars=None):
+def call_ai_service(prompt, model_key = None, conversation_id=None, template_name=None, template_vars=None, user=None):
     # AI调用服务（供ViewSet和Task调用）
     
     # 如果指定了模板，用模板渲染prompt
@@ -230,7 +230,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
     print('messages1', messages, conversation_id)
     # 如果有会话ID，加载历史对话
     if conversation_id:
-        history = get_coversation_history(conversation_id)
+        history = get_coversation_history(conversation_id, user=user)
         messages = history.copy()
 
     # 追加当前用户问题
@@ -243,6 +243,12 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
         messages.append({"role": "assistant", "content": cached_result})
         if conversation_id:
             save_conversation_history(conversation_id, messages)
+            save_conversation_messages_to_db(
+                conversation_id=conversation_id,
+                user=user,
+                user_content=prompt,
+                assistant_content=cached_result,
+            )
         return {
             'reply': cached_result,
             'prompt_tokens':0,
@@ -276,6 +282,12 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
         messages.append({"role": "assistant", "content": ai_reply})
         if conversation_id:
             save_conversation_history(conversation_id, messages)
+            save_conversation_messages_to_db(
+                conversation_id=conversation_id,
+                user=user,
+                user_content=prompt,
+                assistant_content=ai_reply,
+            )
 
         usage = response.usage
         prompt_tokens = usage.prompt_tokens if usage else 0

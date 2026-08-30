@@ -909,7 +909,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             return error_response("对话不存在或没有权限访问", code=404, data={'conversation_id': conversation_id})
 
         from .services import get_coversation_history
-        history = get_coversation_history(conversation_id)
+        history = get_coversation_history(conversation_id, user=request.user)
 
         
         if not history:
