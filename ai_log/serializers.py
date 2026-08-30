@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import AICallLog, PromptTemplate
+from .models import AICallLog, PromptTemplate,Conversation, ConversationMessage
 
 # 序列化器 把 AICallLog 对象转换成JSON，或者把JSON转换成 AICallLog 对象
 class AICallLogSerializer(serializers.ModelSerializer):
@@ -49,3 +49,33 @@ class PromptTemplateSerializer(serializers.ModelSerializer):
         if not all(isinstance(item, str) for item in value): # 先看isinstance(item, str)判断是不是字符串，再for对每个元素判断，再all只有全部元素都是str才是True
             raise serializers.ValidationError("every variable name must be a string")
         return value
+
+class ConversationMessageSerializer(serializers.ModelSerializer):
+    """AI会话消息序列化器"""
+    class Meta:
+        model = ConversationMessage
+        fields = ['id', 'role', 'content']
+        read_only_fields = ['id', 'created_at']
+
+class ConversationSerializer(serializers.ModelSerializer):
+    """AI会话序列化器 (转json)"""
+    messages = ConversationMessageSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = Conversation
+        fields = [
+            "id",
+            "conversation_id",
+            "title",
+            "created_at",
+            "updated_at",
+            "messages",
+        ]
+        read_only_fields = [
+            "id",
+            "conversation_id",
+            "created_at",
+            "updated_at",
+            "messages",
+        ]
+
