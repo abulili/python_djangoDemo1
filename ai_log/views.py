@@ -142,6 +142,31 @@ def split_text_to_chunks(text, chunk_size=500, overlap=100):
 
     return chunks
 
+def simple_keyword_score(query, text):
+    """
+    第一版关键词打分
+    query中关键词在chunk中出现得越多，分数越高，目前简单匹配字词
+    """
+    query = (query or "").strip().lower()
+    text = (text or "").strip().lower()
+
+    if not query or not text:
+        return 0
+    
+    keywords = [word for word in query.split() if word] # 最终一个一维数组
+
+    # 如果是中文，没有空格，就退化成按字符匹配
+    if len(keywords) <= 1:
+        keywords = list(query) # 中文没法splite，就按照一个字符一个字符拆[你，好] --中文分词，可优化
+
+    score = 0
+    for keyword in keywords:
+        if keyword in text:
+            score += text.count(keyword)
+    
+    return score
+
+
 class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
     """知识库文档管理"""
     serializer_class = KnowledgeDocumentSerializer
@@ -176,6 +201,60 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             KnowledgeChunk(document=document, content=chunk, chunk_index=index)
             for index, chunk in enumerate(chunks)
         ])
+
+    @action(detail=False, methods=['post'], url_path='search')
+    def serach(self, request):
+        """
+        有点像搜索框补全关键词，但是不是完全一样
+        1. 前缀匹配：输入 tok，找 token、token refresh
+        2. 包含匹配：输入 fresh，找 token refresh
+        3. 拼音匹配：输入 dl，找 登录
+        4. 历史热词：用户经常搜什么，就优先推荐什么
+        5. 语义联想：用 embedding 找意思相近的词
+        """
+
+        query = request.data.get('query', '')
+        top_k = int(request.data.get('top_k', 3)) # 没传默认取3条内容返回
+
+        if not query.strip():
+            return error_response('请提供query',400)
+
+        
+        """
+        数据量超级大的时候可优化
+        1. 数据库关键词过滤先缩小范围
+        2. 给 content 加全文索引，MySQL / PostgreSQL 都有全文检索能力。
+        3. 接 embedding + 向量库，这是 RAG 后续升级方向，比如 FAISS、Milvus、pgvector。
+        4. 限制文档范围，比如只搜当前选择的知识库、当前项目文档。
+        """
+        if request.user.is_superuser:
+            # select_related('document')： 提前把 chunk 对应的 document 一起查出来，避免循环里每次 chunk.document.title 都重新查数据库。
+            chunks = KnowledgeChunk.objects.select_related('document').all()
+        else:
+            chunks = KnowledgeChunk.objects.select_related('document').filter(document__user=request.user)
+
+        scored_chunks = []
+        for chunk in chunks:
+            score = simple_keyword_score(query, chunk.content)
+            if score > 0:
+                scored_chunks.append({
+                    "id": chunk.id,
+                    "document_id": chunk.document_id,
+                    "document_title": chunk.document.title,
+                    "chunk_index": chunk.chunk_index,
+                    "content": chunk.content,
+                    "score": score,
+                })
+
+        # key=xxx => key=lambda item: item['score']： 排序时按每一项里面的 score 字段来排, lambda是临时小函数，专门写匿名函数
+        # reverse=True： 从大到小排
+        scored_chunks.sort(key=lambda item: item['score'], reverse=True)
+
+        return success_response({
+            "query": query,
+            "top_k": top_k,
+            "scored_chunks": scored_chunks[:top_k],
+        })
 
 class AICallLogViewSet(viewsets.ModelViewSet):
     """
