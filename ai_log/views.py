@@ -65,6 +65,8 @@ from .services import (
     call_ai_service
 )
 
+import re
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -123,6 +125,17 @@ class PromptTemplateViewSet(viewsets.ModelViewSet):
             'content': content,
         })
 
+"""
+RAG 质量决定因素
+文档质量
+-> 切片质量
+-> 分词/关键词提取质量
+-> 向量化质量
+-> 检索排序质量
+-> prompt 组织质量
+-> 最后回答模型质量
+"""
+
 def split_text_to_chunks(text, chunk_size=500, overlap=100):
     """
     把长文本切成多个 chunk。
@@ -150,6 +163,65 @@ def split_text_to_chunks(text, chunk_size=500, overlap=100):
 
     return chunks
 
+# 分词
+def extract_keywords(query):
+    """
+    简单关键词提取：
+    1. 提取英文、数字、下划线组合，比如 stream3、conversation_id
+    2. 提取连续中文词
+    3. 过滤太短和无意义的词
+    """
+    query = (query or "").strip().lower()
+
+    if not query:
+        return []
+
+    # 提取英文/数字/下划线/连续中文
+    words = re.findall(r'[a-zA-Z0-9_]+|[\u4e00-\u9fff]+', query)
+
+    stop_words = {
+        "的", "了", "是", "在", "和", "与", "及", "怎么", "如何",
+        "什么", "为什么", "实现", "一下", "一个"
+    }
+
+    keywords = []
+
+    for word in words:
+        if word in stop_words:
+            continue
+
+        # 英文、数字、下划线保留，比如 stream3 / conversation_id
+        if re.match(r'^[a-zA-Z0-9_]+$', word):
+            keywords.append(word)
+            continue
+
+        # 简单拆分中文短剧
+        if len(word) <= 2:
+            keywords.append(word)
+        else:
+            # 先保留整段
+            keywords.append(word)
+
+            # 再按常见技术词补充
+            common_terms = [
+                "上下文", "会话", "流式", "接口", "缓存", "历史",
+                "用户", "模型", "日志", "切片", "知识库", "检索",
+                "向量", "模板", "刷新", "登录", "鉴权"
+            ]
+
+            for term in common_terms:
+                if term in word:
+                    keywords.append(term)
+
+    # 去重+保持顺序
+    result = []
+    for word in keywords:
+        if word and word not in result:
+            result.append(word)
+
+    return result    
+
+
 def simple_keyword_score(query, text):
     """
     第一版关键词打分
@@ -161,11 +233,7 @@ def simple_keyword_score(query, text):
     if not query or not text:
         return 0
     
-    keywords = [word for word in query.split() if word] # 最终一个一维数组
-
-    # 如果是中文，没有空格，就退化成按字符匹配
-    if len(keywords) <= 1:
-        keywords = list(query) # 中文没法splite，就按照一个字符一个字符拆[你，好] --中文分词，可优化
+    keywords = extract_keywords(query)
 
     score = 0
     for keyword in keywords:
