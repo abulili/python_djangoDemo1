@@ -10,6 +10,8 @@ from .models import KnowledgeChunk, KnowledgeDocument
 from .views import split_text_to_chunks, simple_keyword_score
 from .services import calculate_cost
 
+from unittest.mock import patch
+
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
         # 测文档切片
@@ -140,3 +142,113 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn('自己的文档', document_titles)
         self.assertNotIn('别人的文档', document_titles)
 
+    @patch("ai_log.views.call_ai_service") # 把view.py里用到的call_ai_service临时替换成假的函数
+    # 如果还有其它的接口，加新的patch
+    def test_ask_uses_rag_chunks_and_returns_refrences(self, mock_call_ai_service):
+        # mock外部AI调用，实际不调用，因为要花钱
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="AI日志项目说明",
+            content="stream3 上下文会话说明"
+        )
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id、Redis 和 ConversationMessage 实现上下文会话。",
+            chunk_index=0
+        )
+
+        # 当 ask 接口调用 call_ai_service 时，不要真的调 AI，直接返回我指定的结果。
+        mock_call_ai_service.return_value = (
+            {
+                "reply": "stream3 通过 conversation_id 读取历史上下文，并在流式结束后保存会话消息。"
+            },
+            True
+        )
+
+        # 这里不会真的取请求，因为有@patch
+        # 因为ask里面会调用call_ai_service
+        response = self.client.post("/api/knowledge-documents/ask/", {
+            "query": "stream3 是怎么实现上下文会话的？",
+            "top_k": 3,
+            "model": "deepseek",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["answer"], "stream3 通过 conversation_id 读取历史上下文，并在流式结束后保存会话消息。")
+        self.assertEqual(len(response.data["data"]["references"]), 1)
+        self.assertEqual(response.data["data"]["references"][0]["document_title"], "AI日志项目说明")
+
+        # 断言 call_ai_service 这个函数在本次测试中刚好被调用了一次。
+        # 如果要调用两次不是twice，是self.assertEqual(mock_call_ai_service.call_count, 2)
+        mock_call_ai_service.assert_called_once()
+
+        # prompt拼接
+        # 拿到 fake call_ai_service 被调用时传进去的参数
+        args, kwargs = mock_call_ai_service.call_args
+
+        self.assertIn("stream3", kwargs["prompt"])
+        self.assertIn("conversation_id", kwargs["prompt"])
+        self.assertIn("知识库资料", kwargs["prompt"])
+        self.assertEqual(kwargs["model_key"], "deepseek")
+        self.assertEqual(kwargs["user"], self.user)
+       
+    def test_ask_requires_query(self):
+        """
+        模拟前端传了空问题
+        期望后端返回 400
+        证明接口有参数校验
+        """
+        response = self.client.post('/api/knowledge-documents/ask/', {
+            "query": "",
+            "top_k": 3,
+            "model": "deepseek",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("ai_log.views.call_ai_service")
+    def test_ask_without_matched_chunks_does_not_call_ai(self, mock_call_ai_service):
+        """
+        没有检索到 chunk
+        -> 不应该调用大模型
+        -> 不浪费 token 和费用
+        """
+        response = self.client.post('/api/knowledge-documents/ask/', {
+             "query": "完全不存在的问题",
+            "top_k": 3,
+            "model": "deepseek",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["answer"], "知识库中没有检索到相关内容。")
+        self.assertEqual(response.data["data"]["references"], [])
+
+        # 断言这个假的 call_ai_service 一次都没有被调用
+        mock_call_ai_service.assert_not_called()
+
+    @patch("ai_log.views.call_ai_service")
+    def test_ask_returns_error_when_ai_service_failed(self, mock_call_ai_service):
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="自己的文档",
+            content="stream3 使用 conversation_id 实现上下文会话"
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id 实现上下文会话",
+            chunk_index=0
+        )
+
+        mock_call_ai_service.return_value = ({
+            "reply": "AI 调用失败"
+        }, False)
+
+        response = self.client.post("/api/knowledge-documents/ask/", {
+            "query": "stream3 上下文",
+            "top_k": 3,
+            "model": "deepseek",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 500)

@@ -339,7 +339,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         model_key = request.data.get('model', getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
 
         if not query.strip():
-            return errot_response('请提供query', code=400)
+            return error_response('请提供query', code=400)
 
         if request.user.is_superuser:
             chunks = KnowledgeChunk.objects.select_related('document').all()
