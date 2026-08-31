@@ -12,6 +12,7 @@ from .services import calculate_cost
 
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
+        # 测文档切片
         text = "a" * 1200
 
         chunks = split_text_to_chunks(text, chunk_size=500, overlap=100)
@@ -26,6 +27,7 @@ class RegServiceTests(TestCase):
         self.assertEqual(len(chunks[2]), 400)
 
     def test_simple_keyword_score(self):
+        # 测关键词打分
         query = "stream3 上下文 会话"
         text = "stram3 是带 conversation_id 的上下文流式接口，用来实现多轮会话"
 
@@ -39,6 +41,7 @@ class RegServiceTests(TestCase):
         self.assertGreater(score, 0)
 
     def test_calculate_cost_for_agnes(self):
+        # 测agnes费用计算
         cost = calculate_cost(
             model_key="agnes",
             prompt_tokens=1000,
@@ -54,6 +57,19 @@ class KnowledgeDocumentApiTests(TestCase):
         self.client.force_authenticate(user=self.user)
 
     def test_create_document_auto_create_chunks(self):
+        """
+        准备数据--执行动作--断言结果
+
+        模拟创建知识库文档
+        判断接口是否创建成功
+        判断文档表是否增加一条
+        判断切片是否自动生成了数据
+
+        带test_ 可以自动执行，所以test_要验证的业务行为、
+        setup会站在每个测试方法执行前自动运行一次
+
+        这种测试会创建一个临时测试数据库，测试结束后销毁，不会污染真实开发数据库
+        """
         response = self.client.post('/api/knowledge-documents/', {
             "title": "AI日志项目说明",
             "content": "stream3 是带 conversation_id 的上下文流式接口。" * 30,
@@ -88,6 +104,7 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertNotIn('别人的文档', titles)
 
     def test_search_only_current_user_chunks(self):
+        # 测用户只能检索到自己的chunk
         own_doc = KnowledgeDocument.objects.create(
             user=self.user,
             title="自己的文档",
