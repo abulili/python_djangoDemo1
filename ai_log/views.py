@@ -57,6 +57,14 @@ import uuid
 from .models import AICallLog, PromptTemplate, Conversation, ConversationMessage, KnowledgeChunk, KnowledgeDocument
 from .serializers import KnowledgeDocumentSerializer, KnowledgeChunkSerializer
 
+from .services import (
+    get_coversation_history,
+    save_conversation_history,
+    save_conversation_messages_to_db,
+    calculate_cost,
+    call_ai_service
+)
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -254,6 +262,74 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "query": query,
             "top_k": top_k,
             "scored_chunks": scored_chunks[:top_k],
+        })
+
+    @action(detail=False, methods=['post'], url_path='ask')
+    def ask(self, request):
+        query = request.data.get('query', '')
+        top_k = int(request.data.get('top_k', 3)) 
+        model_key = request.data.get('model', getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
+
+        if not query.strip():
+            return errot_response('请提供query', code=400)
+
+        if request.user.is_superuser:
+            chunks = KnowledgeChunk.objects.select_related('document').all()
+        else:
+            chunks = KnowledgeChunk.objects.select_related('document').filter(document__user=request.user)
+
+        scored_chunks = []
+
+        for chunk in chunks:
+            score = simple_keyword_score(query, chunk.content)
+            if score > 0:
+                scored_chunks.append({
+                    "id": chunk.id,
+                    "document_id": chunk.document_id,
+                    "document_title": chunk.document.title,
+                    "chunk_index": chunk.chunk_index,
+                    "content": chunk.content,
+                    "score": score,
+                })
+        scored_chunks.sort(key=lambda item: item['score'], reverse=True)
+        top_chunks = scored_chunks[:top_k]
+
+        if not top_chunks:
+            return success_response({
+                "query": query,
+                "answer": "知识库中没有检索到相关内容。",
+                "references": [],
+            })
+
+        context = "\n\n".join([
+            f"资料{index + 1}：{item['content']}"
+            for index, item in enumerate(top_chunks)
+        ])
+        
+        rag_prompt = f"""
+        请基于下面的知识库资料回答用户问题。
+        如果资料中没有答案，请明确说“知识库资料中没有找到相关信息”，不要编造。
+
+        知识库资料：
+        {context}
+
+        用户问题：
+        {query}
+        """
+
+        result, success = call_ai_service(
+            prompt=rag_prompt,
+            model_key=model_key,
+            user=request.user
+        )
+
+        if not success:
+            return error_response(result.get('reply', 'AI调用失败'), code=500)
+
+        return success_response({
+            "query": query,
+            "answer": result.get("reply", ""),
+            "references": top_chunks,
         })
 
 class AICallLogViewSet(viewsets.ModelViewSet):
@@ -538,12 +614,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         """
         带 conversation_id 的流式 AI 调用
         """
-        from .services import (
-            get_coversation_history,
-            save_conversation_history,
-            save_conversation_messages_to_db,
-            calculate_cost,
-        )
+       
 
         if not model_key:
             model_key = getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek')
@@ -1049,7 +1120,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         if not logs.exists():
             return error_response("对话不存在或没有权限访问", code=404, data={'conversation_id': conversation_id})
 
-        from .services import get_coversation_history
+        
         history = get_coversation_history(conversation_id, user=request.user)
 
         
