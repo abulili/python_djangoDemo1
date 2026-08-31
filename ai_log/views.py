@@ -279,7 +279,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         ])
 
     @action(detail=False, methods=['post'], url_path='search')
-    def serach(self, request):
+    def search(self, request):
         """
         有点像搜索框补全关键词，但是不是完全一样
         1. 前缀匹配：输入 tok，找 token、token refresh

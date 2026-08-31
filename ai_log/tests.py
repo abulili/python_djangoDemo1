@@ -100,7 +100,7 @@ class KnowledgeDocumentApiTests(TestCase):
         )
 
         other_doc = KnowledgeDocument.objects.create(
-            user=self.user,
+            user=self.other_user,
             title="别人的文档",
             content="stream3 其它资料"
         )
