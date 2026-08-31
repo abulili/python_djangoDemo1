@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import AICallLog, PromptTemplate,Conversation, ConversationMessage
+from .models import AICallLog, PromptTemplate,Conversation, ConversationMessage, KnowledgeChunk, KnowledgeDocument
 
 # 序列化器 把 AICallLog 对象转换成JSON，或者把JSON转换成 AICallLog 对象
 class AICallLogSerializer(serializers.ModelSerializer):
@@ -79,3 +79,37 @@ class ConversationSerializer(serializers.ModelSerializer):
             "messages",
         ]
 
+class KnowledgeChunkSerializer(serializers.ModelSerializer):
+    """知识库切片序列化器"""
+    class Meta:
+        model = KnowledgeChunk
+        fields = ['id', 'content', 'chunk_index', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+class KnowledgeDocumentSerializer(serializers.ModelSerializer):
+    """知识库文档序列化器"""
+    chunks = KnowledgeChunkSerializer(many=True, read_only=True) # 返回文档时，顺便把这个文档下面的多个切片也返回出来
+    chunk_count = serializers.SerializerMethodField() # 文档切了几段,是我自己写方法算出来的字段,KnowledgeDocument 表里没有 chunk_count 这一列。但是前端想看到
+    # 然后 DRF 会自动找get_chunk_count
+    # 字段名叫 chunk_count,方法名就叫 get_chunk_count
+
+    class Meta:
+        model = KnowledgeDocument
+        fields = [
+            'id',
+            'title',
+            'content',
+            'created_at',
+            'updated_at',
+            'chunks',
+            'chunk_count',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'chunks', 'chunk_count']
+
+    def get_chunk_count(self, obj):
+        return obj.chunks.count()
+
+    def validate_content(self, value):
+        if len(value.strip()) < 10: # strip() 是去掉首尾空格、换行
+            raise serializers.ValidationError("文档内容至少10个字符")
+        return value

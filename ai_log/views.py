@@ -54,7 +54,8 @@ from django.db.models.functions import TruncDate # 把 call_time 截成日期
 
 import uuid
 
-from .models import AICallLog, PromptTemplate, Conversation, ConversationMessage
+from .models import AICallLog, PromptTemplate, Conversation, ConversationMessage, KnowledgeChunk, KnowledgeDocument
+from .serializers import KnowledgeDocumentSerializer, KnowledgeChunkSerializer
 
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
@@ -114,6 +115,67 @@ class PromptTemplateViewSet(viewsets.ModelViewSet):
             'content': content,
         })
 
+def split_text_to_chunks(text, chunk_size=500, overlap=100):
+    """
+    把长文本切成多个 chunk。
+    第一版用固定长度 + overlap
+    """
+    text = (text or "").strip()
+    chunks = []
+
+    if not text:
+        return chunks
+
+    start = 0
+    text_length = len(text)
+
+    while start < text_length:
+        end = start + chunk_size
+        chunk = text[start:end].strip()
+
+        if chunk:
+            chunks.append(chunk)
+        if end >= text_length:
+            break
+
+        start = end - overlap
+
+    return chunks
+
+class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
+    """知识库文档管理"""
+    serializer_class = KnowledgeDocumentSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_superuser:
+            return KnowledgeDocument.objects.all()
+        return KnowledgeDocument.objects.filter(user=user)
+
+    def perform_create(self, serializer):
+        document = serializer.save(user=self.request.user)
+        chunks = split_text_to_chunks(document.content)
+        # bulk_create = 一次性批量创建 chunks，比循环 create 更省数据库操作
+        KnowledgeChunk.objects.bulk_create([
+             KnowledgeChunk(
+                document=document,
+                content=chunk,
+                chunk_index=index,
+            )
+            for index, chunk in enumerate(chunks)
+        ])
+
+    def perform_update(self, serializer):
+        document = serializer.save()
+
+        document.chunks.all().delete()
+
+        chunks = split_text_to_chunks(document.content)
+
+        KnowledgeChunk.objects.bulk_create([
+            KnowledgeChunk(document=document, content=chunk, chunk_index=index)
+            for index, chunk in enumerate(chunks)
+        ])
 
 class AICallLogViewSet(viewsets.ModelViewSet):
     """

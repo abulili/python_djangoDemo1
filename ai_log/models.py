@@ -126,4 +126,37 @@ class ConversationMessage(models.Model):
     def __str__(self):
         return f"{self.role} - {self.content[:20]}"
     
+class KnowledgeDocument(models.Model):
+    """知识库文档"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="用户")
+    title = models.CharField(max_length=100, verbose_name="文档标题")
+    content = models.TextField(verbose_name="文档内容")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+    class Meta:
+        verbose_name = "知识库文档"
+        verbose_name_plural = "知识库文档"
+        ordering = ['-created_at']
+    def __str__(self):
+        return self.title
+
+class KnowledgeChunk(models.Model):
+    """知识库切片"""
+    document = models.ForeignKey(
+        KnowledgeDocument,
+        on_delete=models.CASCADE,
+        related_name="chunks", # 一个 KnowledgeDocument 可以通过 obj.chunks 找到它下面的所有 KnowledgeChunk
+        verbose_name="所属文档"
+    )
+    content = models.TextField(verbose_name="切片内容")
+    chunk_index = models.IntegerField(verbose_name="切片索引", default=0)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     
+    class Meta:
+        verbose_name = "知识库切片"
+        verbose_name_plural = "知识库切片"
+        ordering = ['document_id', 'chunk_index']
+
+    def __str__(self):
+        return f"{self.document.title} - 切片 {self.chunk_index}"
+        
