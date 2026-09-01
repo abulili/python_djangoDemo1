@@ -39,6 +39,9 @@ class AICallLog(models.Model):
     cost = models.FloatField(verbose_name="费用（元）", default=0)
     conversation_id = models.CharField(max_length=50, verbose_name="会话ID", blank=True, null=True,default='')
 
+    # db_index: 给这个字段加索引，后续按 trace_id 搜索会快。
+    trace_id = models.CharField(max_length=64, verbose_name="链路追踪ID", blank=True, null=True, db_index=True)
+    
     # 显示规则 在后台或命令行里打印这个对象时，会看到什么样的文字
     def __str__(self):
         # 显示“调用时间 - 用户输入的前20个字
@@ -160,3 +163,4 @@ class KnowledgeChunk(models.Model):
     def __str__(self):
         return f"{self.document.title} - 切片 {self.chunk_index}"
         
+

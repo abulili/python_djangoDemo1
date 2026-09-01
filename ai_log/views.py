@@ -683,7 +683,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         return response
     
     # 可以不加这个括号，因为只是 Python 的多行 import 写法
-    def stream_ai_response_with_history(self, prompt, model_key, conversation_id, user):
+    def stream_ai_response_with_history(self, prompt, model_key, conversation_id, user, trace_id = ""):
         """
         带 conversation_id 的流式 AI 调用
         """
@@ -786,6 +786,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 cost=cost,
+                trace_id=trace_id,
             )
 
             yield f"data:{json.dumps({'done': True}, ensure_ascii=False)}\n\n"
@@ -799,6 +800,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 user=user,
                 model_name=model_key,
                 conversation_id=conversation_id,
+                trace_id=trace_id,
             )
             yield f"data:{json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
     
@@ -811,6 +813,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         prompt = request.data.get('prompt')
         model_key = request.data.get('model', getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
         conversation_id = request.data.get('conversation_id')
+        trace_id = getattr(request, "trace_id", "")
         
         if not prompt:
             return error_response("请提供 prompt", code=400)
@@ -827,7 +830,8 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 prompt=prompt,
                 model_key=model_key,
                 conversation_id=conversation_id,
-                user=request.user
+                user=request.user,
+                trace_id=trace_id
             )
         response = StreamingHttpResponse(
             event_stream(),
@@ -950,6 +954,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         model_name = self.request.query_params.get('model_name')
         success = self.request.query_params.get('success')
         conversation_id = self.request.query_params.get('conversation_id')
+        trace_id = self.request.query_params.get('trace_id')
 
         if keyword:
             queryset = queryset.filter(
@@ -965,6 +970,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         
         if conversation_id:
             queryset = queryset.filter(conversation_id=conversation_id)
+
+        if trace_id:
+            queryset = queryset.filter(trace_id__icontains=trace_id)
 
         return queryset
         
