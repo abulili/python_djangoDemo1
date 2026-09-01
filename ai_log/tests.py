@@ -383,6 +383,53 @@ class KnowledgeDocumentApiTests(TestCase):
 
         self.assertIsNotNone(log)
 
+    @patch("ai_log.views.call_ai_service")
+    def test_ask_saves_trace_id_to_ai_call_log(self, mock_call_ai_service):
+        trace_id = "test-trace-id-001"
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="AI日志项目说明",
+            content="stream3 使用 conversation_id 实现上下文会话"
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id 实现上下文会话",
+            chunk_index=0
+        )
+
+        mock_call_ai_service.return_value = ({
+            "reply": "根据知识库资料，stream3 使用 conversation_id 保存上下文。",
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 1.2,
+        }, True)
+
+        response = self.client.post("/api/knowledge-documents/ask/",{
+                "query": "stream3 是怎么实现上下文会话的？",
+                "top_k": 3,
+                "model": "deepseek",
+            },
+            format="json",
+            # django测试里面写这样模拟真实请求头： HTTP_ + 大写请求头名 + 横杠变下划线
+            HTTP_X_TRACE_ID=trace_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        log = AICallLog.objects.filter(trace_id=trace_id, user=self.user).first()
+
+        self.assertIsNotNone(log)
+        self.assertEqual(log.trace_id, trace_id)
+        self.assertEqual(log.user, self.user)
+        self.assertEqual(log.prompt, "stream3 是怎么实现上下文会话的？")
+
+
+
+
 
 
 
