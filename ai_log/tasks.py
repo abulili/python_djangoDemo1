@@ -10,7 +10,7 @@ from .services import call_ai_service
 logger = logging.getLogger(__name__)
 
 @shared_task
-def call_ai_task(prompt, user_id):
+def call_ai_task(prompt, user_id, trace_id = ""):
     """
     异步调用AI模型，存结果到数据库。
     """
@@ -32,7 +32,7 @@ def call_ai_task(prompt, user_id):
         duration = time.time() - start_time
 
         ai_reply = response.choices[0].message.content
-
+        
         # 存数据库
         user = User.objects.get(id=user_id)
         log = AICallLog.objects.create(
@@ -41,6 +41,7 @@ def call_ai_task(prompt, user_id):
             duration = round(duration,2),
             success=True,
             user=user,
+            trace_id=trace_id
         )
         logger.info(f"AI调用成功， 日志ID： {log.id}")
         return {
@@ -61,6 +62,7 @@ def call_ai_task(prompt, user_id):
                 duration=0.0,
                 success=False,
                 user=user,
+                trace_id=trace_id,
             )
         except:
             pass
@@ -70,7 +72,7 @@ def call_ai_task(prompt, user_id):
         }
 
 @shared_task
-def call_ai_task2(prompt, user_id, model_key=None):
+def call_ai_task2(prompt, user_id, model_key=None,trace_id=""):
     """
     异步调用AI模型，存结果到数据库。
     """
@@ -111,6 +113,7 @@ def call_ai_task2(prompt, user_id, model_key=None):
             success=True,
             user=user,
             model_name=model_key,
+            trace_id=trace_id,
         )
         logger.info(f"AI调用成功， 日志ID： {log.id}")
         return {
@@ -134,6 +137,7 @@ def call_ai_task2(prompt, user_id, model_key=None):
                 success=False,
                 user=user,
                 model_name=model_key,
+                trace_id=trace_id,
             )
         except:
             pass
@@ -143,19 +147,26 @@ def call_ai_task2(prompt, user_id, model_key=None):
         }
 
 @shared_task
-def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, template_name=None, template_vars=None):
+def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, template_name=None, template_vars=None,trace_id=""):
     """
     异步调用AI模型，存结果到数据库。
     """
 
     logger.info(f"开始处理AI调用，会话ID：{conversation_id}用户ID： {user_id}, prompt: {prompt[:50]}...")
     user = User.objects.get(id=user_id)
-    result, success = call_ai_service(prompt,model_key,conversation_id, template_name, template_vars, user=user)
+    result, success = call_ai_service(
+        prompt=prompt,
+        model_key=model_key,
+        conversation_id=conversation_id,
+        template_name=template_name,
+        template_vars=template_vars,
+        user=user
+    )
     
     try:
         log = AICallLog.objects.create(
             prompt = prompt,
-            response = result['reply'],
+            response=result.get('reply', ''),
             duration = result['duration'] if result.get('duration') else 0.0,
             success=success,
             user=user,
@@ -165,6 +176,7 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
             total_tokens=result.get('total_tokens', 0),
             cost=result.get('cost', 0.0),
             conversation_id=conversation_id,
+            trace_id=trace_id
         )
         logger.info(f"AI调用成功， 日志ID： {log.id}")
         return {
@@ -192,6 +204,7 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
                 user=user,
                 model_name=model_key or 'deepseek',
                 conversation_id=conversation_id,
+                trace_id=trace_id,
             )
         except:
             pass

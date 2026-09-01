@@ -397,7 +397,30 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         )
 
         if not success:
+            AICallLog.objects.create(
+                prompt=query,
+                response=result.get("reply", "AI调用失败"),
+                duration=result.get("duration", 0.0),
+                success=False,
+                user=request.user,
+                model_name=model_key,
+                trace_id=getattr(request, "trace_id", ""),
+            )
             return error_response(result.get('reply', 'AI调用失败'), code=500)
+
+        AICallLog.objects.create(
+            prompt=query,
+            response=result.get("reply", ""),
+            duration=result.get("duration", 0.0),
+            success=True,
+            user=request.user,
+            model_name=model_key,
+            prompt_tokens=result.get("prompt_tokens", 0),
+            completion_tokens=result.get("completion_tokens", 0),
+            total_tokens=result.get("total_tokens", 0),
+            cost=result.get("cost", 0.0),
+            trace_id=getattr(request, "trace_id", ""),
+        )
 
         return success_response({
             "query": query,
@@ -502,8 +525,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        trace_id = getattr(request, "trace_id", "")
          # 把任务丢给 Celery，不等待
-        task = call_ai_task2.delay(user_prompt, request.user.id, model_key)
+        task = call_ai_task2.delay(user_prompt, request.user.id, model_key, trace_id)
         
         # 返回任务ID和状态
         return success_response({
@@ -539,8 +563,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
 
+        trace_id = getattr(request, "trace_id", "")
         # 把任务丢给 Celery，不等待
-        task = call_ai_task4.delay(user_prompt, request.user.id, model_key, conversation_id, template_name, template_vars)
+        task = call_ai_task4.delay(user_prompt, request.user.id, model_key, conversation_id, template_name, template_vars, trace_id)
         
         # 返回任务ID和状态
         return success_response({
@@ -899,7 +924,8 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             )
 
          # 把任务丢给 Celery，不等待
-        task = call_ai_task.delay(user_prompt, request.user.id)
+        trace_id = getattr(request, "trace_id", "")
+        task = call_ai_task.delay(user_prompt, request.user.id, trace_id)
 
         return success_response({
             'task_id': task.id,
