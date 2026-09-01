@@ -314,6 +314,74 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertEqual(messages[1].role, "assistant")
         self.assertEqual(messages[1].content, "stream3 通过 conversation_id 关联上下文。")
 
+    @patch("ai_log.views.call_ai_service")
+    def test_ask_creates_conversation_id_when_missing(self, mock_call_ai_service):
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="AI日志项目说明",
+            content="stream3 使用 conversation_id 实现上下文会话"
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id 实现上下文会话",
+            chunk_index=0
+        )
+
+        mock_call_ai_service.return_value = ({
+            "reply": "stream3 会在没有 conversation_id 时自动创建会话。",
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 1.2,
+        }, True)
+
+        response = self.client.post("/api/knowledge-documents/ask/", {
+            "query": "stream3 会不会自动创建会话？",
+            "top_k": 3,
+            "model": "deepseek",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        
+        conversation_id = response.data["data"]["conversation_id"]
+        # 断言为真 =》 这个conversation_id有值
+        self.assertTrue(conversation_id)
+
+        conversation = Conversation.objects.filter(
+            conversation_id=conversation_id,
+            user=self.user
+        ).first()
+
+        self.assertIsNotNone(conversation)
+        
+        """
+        conversation=conversation 是django orm常见的写法
+        因为ConversationMessage中的Conversation是外键
+        class ConversationMessage(models.Model):
+            conversation = models.ForeignKey(
+                Conversation,
+                on_delete=models.CASCADE,
+                related_name="messages"
+            )
+        """
+        message = list(
+            ConversationMessage.objects.filter(
+                conversation=conversation
+            ).order_by("created_at")
+        )
+
+        self.assertEqual(len(message), 2)
+        self.assertEqual(message[0].role, "user")
+        self.assertEqual(message[1].role, "assistant")
+
+        log = AICallLog.objects.filter(
+            conversation_id=conversation_id,
+            user=self.user
+        ).first()
+
+        self.assertIsNotNone(log)
 
 
 
