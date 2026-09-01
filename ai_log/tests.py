@@ -6,7 +6,13 @@ from django.test import TestCase
 from django.contrib.auth.models import User
 from rest_framework.test import APIClient
 
-from .models import KnowledgeChunk, KnowledgeDocument
+from .models import (
+    AICallLog,
+    Conversation,
+    ConversationMessage,
+    KnowledgeChunk,
+    KnowledgeDocument,
+)
 from .views import split_text_to_chunks, simple_keyword_score
 from .services import calculate_cost
 
@@ -252,3 +258,65 @@ class KnowledgeDocumentApiTests(TestCase):
         }, format="json")
 
         self.assertEqual(response.status_code, 500)
+
+    @patch("ai_log.views.call_ai_service")
+    def test_ask_saves_conversation_history(self, mock_call_ai_service):
+        conversation_id = "test-rag-conversation-001"
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="AI日志项目说明",
+            content="stream3 使用 conversation_id 实现上下文会话"
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id 实现上下文会话",
+            chunk_index=0
+        )
+
+        mock_call_ai_service.return_value = ({
+            "reply": "stream3 通过 conversation_id 关联上下文。",
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 1.2,
+        }, True)
+
+        response = self.client.post("/api/knowledge-documents/ask/", {
+            "query": "stream3 是怎么实现上下文会话的？",
+            "top_k": 3,
+            "model": "deepseek",
+            "conversation_id": conversation_id,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["conversation_id"], conversation_id)
+
+        # 真实查询
+        log = AICallLog.objects.filter(conversation_id=conversation_id).first()
+        # 期望log不是None  因为对测试数据库来说是一个正常字符串 ask调用成功后会调用save_conversation_messages_to_db
+        self.assertIsNotNone(log)
+        self.assertEqual(log.prompt, "stream3 是怎么实现上下文会话的？")
+        self.assertEqual(log.response, "stream3 通过 conversation_id 关联上下文。")
+
+        # 这里的self.user来自setup   .first()只取第一条
+        conversation = Conversation.objects.filter(conversation_id=conversation_id, user=self.user).first()
+        self.assertIsNotNone(conversation)
+
+        messages = ConversationMessage.objects.filter(conversation=conversation).order_by("created_at")
+        # count()：数据库数数量，适合只关心数量
+        # len()：把数据取出来再数，适合后面本来就要遍历/使用数据
+        self.assertEqual(len(messages), 2)
+        self.assertEqual((messages[0].role), "user")
+        self.assertEqual(messages[0].content, "stream3 是怎么实现上下文会话的？")
+        self.assertEqual(messages[1].role, "assistant")
+        self.assertEqual(messages[1].content, "stream3 通过 conversation_id 关联上下文。")
+
+
+
+
+
+
+
