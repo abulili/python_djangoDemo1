@@ -337,9 +337,13 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         query = request.data.get('query', '')
         top_k = int(request.data.get('top_k', 3)) 
         model_key = request.data.get('model', getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
+        conversation_id = request.data.get('conversation_id')
 
         if not query.strip():
             return error_response('请提供query', code=400)
+
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
 
         if request.user.is_superuser:
             chunks = KnowledgeChunk.objects.select_related('document').all()
@@ -367,6 +371,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
                 "query": query,
                 "answer": "知识库中没有检索到相关内容。",
                 "references": [],
+                "conversation_id": conversation_id,
             })
 
         context = "\n\n".join([
@@ -398,6 +403,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
 
         if not success:
             AICallLog.objects.create(
+                conversation_id=conversation_id,
                 prompt=query,
                 response=result.get("reply", "AI调用失败"),
                 duration=result.get("duration", 0.0),
@@ -409,6 +415,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             return error_response(result.get('reply', 'AI调用失败'), code=500)
 
         AICallLog.objects.create(
+            conversation_id=conversation_id,
             prompt=query,
             response=result.get("reply", ""),
             duration=result.get("duration", 0.0),
@@ -422,10 +429,20 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             trace_id=getattr(request, "trace_id", ""),
         )
 
+        assistant_content = result.get("reply", "")
+
+        save_conversation_messages_to_db(
+            conversation_id=conversation_id,
+            user=request.user,
+            user_content=query,
+            assistant_content=assistant_content,
+        )
+
         return success_response({
             "query": query,
             "answer": result.get("reply", ""),
             "references": top_chunks,
+            "conversation_id": conversation_id,
         })
 
 class AICallLogViewSet(viewsets.ModelViewSet):
@@ -1223,8 +1240,12 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         """
         # 当前用户的情况
         # 先在“当前用户可见的日志范围”里查有没有这个 conversation_id。
+
+        conversation = Conversation.objects.filter(conversation_id=conversation_id, user=request.user).first()
+
         logs = self.get_queryset().filter(conversation_id=conversation_id).order_by('call_time')
-        if not logs.exists():
+       
+        if not conversation and not logs.exists():
             return error_response("对话不存在或没有权限访问", code=404, data={'conversation_id': conversation_id})
 
         
