@@ -427,7 +427,81 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertEqual(log.user, self.user)
         self.assertEqual(log.prompt, "stream3 是怎么实现上下文会话的？")
 
+class AICallLogApiTests(TestCase):
+    def setup(self):
+        self.user = User.objects.create_user(
+            username="loguser",
+            password="123456"
+        )
+        # DRF 专门给测试用的假前端，模拟发请求
+        self.client = APIClient()
+        # 强制让后面的请求都当成 self.user 已登录
+        self.client.force_authenticate(user=self.user)
 
+    def test_filter_logs_by_trace_id(self):
+        AICallLog.objects.create(
+            user=self.user,
+            prompt="问题1",
+            response="回答1",
+            model_name="deepseek",
+            success=True,
+            trace_id="test-aaa-001",
+        )
+
+        AICallLog.objects.create(
+            user=self.user,
+            prompt="问题2",
+            response="回答2",
+            model_name="deepseek",
+            success=True,
+            trace_id="test-bbb-002",
+        )
+
+        # 模拟：GET /api/logs/?trace_id=aaa
+        # 因为后端用了 queryset = queryset.filter(trace_id__icontains=trace_id) 匹配test-aaa-001
+        # 这个走的是真实接口
+        response = self.client.get("/api/logs/", {
+            "trace_id": "aaa",
+        })
+
+        self.assertEqual(response.status_code, 200)
+
+        results = response.data["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["trace_id"], "test-aaa-001")
+        self.assertEqual(results[0]["prompt"], "问题1")
+
+    def test_filter_logs_by_trace_id_only_current_user(self):
+        # 用户隔离测试
+        other_user = User.objects.create_user(username="otherloguser", password="123456")
+
+        AICallLog.objects.create(
+            user=self.user,
+            prompt="自己的问题",
+            response="自己的回答",
+            model_name="deepseek",
+            success=True,
+            trace_id="same-trace-id",
+        )
+
+        AICallLog.objects.create(
+            user=other_user,
+            prompt="别人的问题",
+            response="别人的回答",
+            model_name="deepseek",
+            success=True,
+            trace_id="same-trace-id",
+        )
+
+        response = self.client.get("/api/logs/", {
+            "trace_id": "same-trace-id",
+        })
+
+        self.assertEqual(response.status_code, 200)
+
+        results = response.data["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["prompt"], "自己的问题")
 
 
 
