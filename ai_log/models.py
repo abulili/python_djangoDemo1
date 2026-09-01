@@ -163,4 +163,42 @@ class KnowledgeChunk(models.Model):
     def __str__(self):
         return f"{self.document.title} - 切片 {self.chunk_index}"
         
+class RagTraceLog(models.Model):
+    """RAG 问答步骤跟踪日志"""
+
+    """
+    AICallLog.success：
+    这次 AI 调用整体成功了吗
+
+    RagTraceLog.success：
+    某个步骤成功了吗
+
+    所以需要独立记录，因为单一职责
+
+    AICallLog：结果表
+    RagTraceLog：过程表
+    ConversationMessage：对话内容表
+    Conversation：会话主表
+    User：用户表
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="用户", null=True, blank=True)
+    trace_id = models.CharField(max_length=64, verbose_name="链路跟踪ID", db_index=True)
+    conversation_id = models.CharField(max_length=64, verbose_name="会话ID", blank=True, default="")
+    step = models.CharField(max_length=50, verbose_name="步骤")
+    query = models.TextField(verbose_name="用户问题", blank=True, default="")
+    detail = models.JSONField(verbose_name="步骤详情", blank=True, default=dict)
+    success = models.BooleanField(verbose_name="是否成功", default=True)
+    error_message = models.TextField(verbose_name="错误信息", blank=True, default="")
+    duration = models.FloatField(verbose_name="步骤耗时", default=0.0)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    class Meta:
+        verbose_name="RAG步骤追踪日志"
+        # verbose_name_plural：Django Admin 后台里显示的复数名称。
+        verbose_name_plural="RAG步骤追踪日志"
+        ordering=["created_at"]
+
+    def __str__(self):
+        return f"{self.trace_id} - {self.step}"
 

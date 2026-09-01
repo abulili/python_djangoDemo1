@@ -54,7 +54,10 @@ from django.db.models.functions import TruncDate # 把 call_time 截成日期
 
 import uuid
 
-from .models import AICallLog, PromptTemplate, Conversation, ConversationMessage, KnowledgeChunk, KnowledgeDocument
+from .models import (
+    AICallLog, PromptTemplate, Conversation, ConversationMessage, KnowledgeChunk, KnowledgeDocument,
+    RagTraceLog
+)
 from .serializers import KnowledgeDocumentSerializer, KnowledgeChunkSerializer
 
 from .services import (
@@ -338,12 +341,25 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         top_k = int(request.data.get('top_k', 3)) 
         model_key = request.data.get('model', getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
         conversation_id = request.data.get('conversation_id')
+        trace_id = getattr(request, "trace_id", "")
 
         if not query.strip():
             return error_response('请提供query', code=400)
 
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
+
+        RagTraceLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="rag_start",
+            query=query,
+            detail={
+                "top_k": top_k,
+                "model": model_key
+            }
+        )
 
         if request.user.is_superuser:
             chunks = KnowledgeChunk.objects.select_related('document').all()
@@ -366,10 +382,37 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         scored_chunks.sort(key=lambda item: item['score'], reverse=True)
         top_chunks = scored_chunks[:top_k]
 
+        RagTraceLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="retrieve_chunks",
+            query=query,
+            detail={
+                "total_scored": len(scored_chunks),
+                "hit_count": len(top_chunks),
+                "top_k": top_k,
+                "chunk_ids": [item["id"] for item in top_chunks],
+            }
+        )
+
         if not top_chunks:
+            answer = "知识库中没有检索到相关内容。"
+
+            RagTraceLog.objects.create(
+                user=request.user,
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                step="rag_no_hit",
+                query=query,
+                detail={
+                    "answer": answer,
+                }
+            )
+
             return success_response({
                 "query": query,
-                "answer": "知识库中没有检索到相关内容。",
+                "answer": answer,
                 "references": [],
                 "conversation_id": conversation_id,
             })
@@ -395,6 +438,28 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         {query}
         """
 
+        """
+        detail 里面必须是 JSON 能表示的东西: 
+            字符串
+            数字
+            布尔值
+            None
+            list
+            dict
+        """
+        RagTraceLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="build_prompt",
+            query=query,
+            # 能自动转json
+            detail={
+                "context_length": len(context),
+                "prompt_length": len(rag_prompt),
+            }
+        )
+
         result, success = call_ai_service(
             prompt=rag_prompt,
             model_key=model_key,
@@ -412,6 +477,20 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
                 model_name=model_key,
                 trace_id=getattr(request, "trace_id", ""),
             )
+
+            RagTraceLog.objects.create(
+                user=request.user,
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                step="call_model",
+                query=query,
+                success=False,
+                error_message=result.get("reply", "AI调用失败"),
+                detail={
+                    "model": model_key,
+                },
+            )
+
             return error_response(result.get('reply', 'AI调用失败'), code=500)
 
         AICallLog.objects.create(
@@ -436,6 +515,21 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             user=request.user,
             user_content=query,
             assistant_content=assistant_content,
+        )
+
+        RagTraceLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="rag_done",
+            query=query,
+            detail={
+                "model": model_key,
+                "answer_length": len(result.get("reply", "")),
+                "references_count": len(top_chunks),
+                "total_tokens": result.get("total_tokens", 0),
+                "cost": result.get("cost", 0.0),
+            },
         )
 
         return success_response({

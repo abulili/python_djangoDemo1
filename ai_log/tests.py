@@ -428,7 +428,7 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertEqual(log.prompt, "stream3 是怎么实现上下文会话的？")
 
 class AICallLogApiTests(TestCase):
-    def setup(self):
+    def setUp(self):
         self.user = User.objects.create_user(
             username="loguser",
             password="123456"
