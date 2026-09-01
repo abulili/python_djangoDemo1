@@ -38,8 +38,8 @@ INSTALLED_APPS = [
 
 # 中间件列表，请求会按顺序经过这些中间件处理，响应会按相反顺序返回
 MIDDLEWARE = [
+    'ai_log.middleware.TraceIdMiddleware',
     'corsheaders.middleware.CorsMiddleware',  # 放在最前面 处理跨域
-    'django.middleware.security.SecurityMiddleware',
     'django.middleware.security.SecurityMiddleware',  # 安全相关，如 HTTPS 重定向、安全头
     'django.contrib.sessions.middleware.SessionMiddleware',  # 会话管理，给 request 添加 session 对象
     'django.middleware.common.CommonMiddleware',  # 通用中间件，处理 URL 规范化、语言设置等
@@ -245,3 +245,8 @@ CORS_ALLOWED_ORIGINS = [
 
 # 允许携带凭证（如 cookies、authorization headers）
 CORS_ALLOW_CREDENTIALS = True
+
+CORS_EXPOSE_HEADERS = [
+    "X-Trace-Id",
+    "X-Response-Time",
+]

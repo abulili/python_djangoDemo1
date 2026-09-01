@@ -71,8 +71,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'ai_log.middleware.TraceIdMiddleware',
     'corsheaders.middleware.CorsMiddleware',  # 放在最前面
-    'django.middleware.security.SecurityMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -210,3 +210,9 @@ CACHES = {
         }
     }
 }
+
+# 暴露头
+CORS_EXPOSE_HEADERS = [
+    "X-Trace-Id",
+    "X-Response-Time",
+]
