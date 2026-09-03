@@ -835,11 +835,35 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             model_config = settings.AI_MODELS[model_key]
             
         history = get_coversation_history(conversation_id, user=user)
+
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="load_history",
+            query=prompt,
+            detail={
+                "history_count": len(history),
+            },
+        )
+
         messages = history.copy()
         messages.append({
             "role": "user",
             "content": prompt
         })
+
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="build_messages",
+            query=prompt,
+            detail={
+                "message_count": len(messages),
+                "model": model_key,
+            },
+        )
 
         client = OpenAI(
             api_key = model_config['api_key'],
@@ -850,6 +874,18 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         full_response = []
 
         try: 
+            AiTraceStepLog.objects.create(
+                user=user,
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                step="call_model_start",
+                query=prompt,
+                detail={
+                    "model": model_key,
+                    "stream": True,
+                },
+            )
+
             response = client.chat.completions.create(
                 model=model_config['default_model'],
                 messages=messages,
@@ -911,6 +947,23 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 usage=usage,
                 real_model_name=model_config["default_model"],
             )
+
+            AiTraceStepLog.objects.create(
+                user=user,
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                step="stream_done",
+                query=prompt,
+                detail={
+                    "answer_length": len(ai_reply),
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "cost": cost,
+                },
+            )
+
+            
             AICallLog.objects.create(
                 prompt=prompt,
                 response=ai_reply,
@@ -939,6 +992,20 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 conversation_id=conversation_id,
                 trace_id=trace_id,
             )
+
+            AiTraceStepLog.objects.create(
+                user=user,
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                step="stream_failed",
+                query=prompt,
+                success=False,
+                error_message=str(e),
+                detail={
+                    "model": model_key,
+                },
+            )
+
             yield f"data:{json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
     
     @throttle_classes([AICallThrottle])
@@ -951,12 +1018,27 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         model_key = request.data.get('model', getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
         conversation_id = request.data.get('conversation_id')
         trace_id = getattr(request, "trace_id", "")
+
+        
         
         if not prompt:
             return error_response("请提供 prompt", code=400)
         
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
+
+        AiTraceStepLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="stream_start",
+            query=prompt,
+            detail={
+                "model": model_key,
+                # has_conversation_id: 前端有没有传旧会话 ID
+                "has_conversation_id": bool(request.data.get("conversation_id")),
+            },
+        )
         
         def event_stream():
             # 分成两次发，先发conversation_id
@@ -1431,6 +1513,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         return success_response({
             "trace_id": trace_id,
             "logs": log_data,
+            "steps": step_data,
             "rag_steps": step_data,
             "summary": {
                 "log_count": len(log_data),

@@ -868,6 +868,87 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(len(data["rag_steps"]), 1)
         self.assertEqual(data["rag_steps"][0]["query"], "自己的问题")
 
+    @patch("ai_log.views.OpenAI")
+    def test_stream3_creates_ai_trace_steps(self, mock_openai):
+        # 普通流式产生追踪日志
+        """
+        请求 stream3
+        -> mock 模型返回 “你好”
+        -> 消费 streaming_content
+        -> 后端保存 AICallLog
+        -> 后端保存 AiTraceStepLog
+        -> 检查步骤链路完整
+        """
+        trace_id = "test-stream3-trace-001"
+
+
+        # 这些class模拟流式chunk chunk.choices[0].delta.content
+        class FakeDelta:
+            content = "你好"
+
+        class FakeChoice:
+            delta = FakeDelta()
+
+        class FakeUsage:
+            prompt_tokens = 10
+            completion_tokens = 5
+            total_tokens = 15
+
+        class FakeChunk:
+            choices = [FakeChoice()]
+            usage = None
+
+        class FakeUsageChunk:
+            choices = []
+            usage = FakeUsage()
+
+        mock_client = mock_openai.return_value
+        mock_client.chat.completions.create.return_value = [
+            FakeChunk(),
+            FakeUsageChunk(),
+        ]
+
+        conversation_id = "test-stream3-conversation-001"
+        response = self.client.post("/api/logs/stream3/",
+            {
+                "prompt": "你好",
+                "model": "deepseek",
+                "conversation_id": conversation_id,
+            },
+            HTTP_X_TRACE_ID=trace_id,
+            format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+        
+        # StreamingHttpResponse主动执行，yield生成器中的代码才会真正执行
+        # bytes，字节串，拼起来
+        content = b"".join(response.streaming_content).decode("utf-8")
+        self.assertIn("你好",content)
+
+        steps = AiTraceStepLog.objects.filter(trace_id=trace_id).order_by("created_at")
+        step_names = [item.step for item in steps]
+
+        self.assertIn("stream_start", step_names)
+        self.assertIn("load_history", step_names)
+        self.assertIn("build_messages", step_names)
+        self.assertIn("call_model_start", step_names)
+        self.assertIn("stream_done", step_names)
+
+        log = AICallLog.objects.filter(trace_id=trace_id).first()
+        self.assertIsNotNone(log)
+        self.assertTrue(log.success)
+
+        log = AICallLog.objects.filter(
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+        ).first()
+
+        self.assertIsNotNone(log)
+        self.assertTrue(log.success)
+        self.assertEqual(log.prompt, "你好")
+        self.assertEqual(log.response, "你好")
+        self.assertEqual(log.total_tokens, 15)
+
 
 
 
