@@ -231,6 +231,7 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertEqual(response.data["data"]["references"], [])
 
         # 断言这个假的 call_ai_service 一次都没有被调用
+        # mock_call_ai_service代表的就是在patch中使用的call_ai_service
         mock_call_ai_service.assert_not_called()
 
     @patch("ai_log.views.call_ai_service")
@@ -562,6 +563,36 @@ class AICallLogApiTests(TestCase):
         self.assertEqual(retrieve_log.detail["hit_count"], 1)
         self.assertEqual(retrieve_log.detail["top_k"], 3)
         self.assertEqual(len(retrieve_log.detail["chunk_ids"]), 1)
+
+    @patch("ai_log.views.call_ai_service")
+    def test_ask_creates_no_hit_trace_log(self, mock_call_ai_service):
+        trace_id = "test-rag-no-hit-trace-001"
+
+        response = self.client.post("/api/knowledge-documents/ask/",
+            {
+                "query": "完全不存在的问题",
+                "top_k": 3,
+                "model": "deepseek",
+            },
+            format="json",
+            HTTP_X_TRACE_ID=trace_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_call_ai_service.assert_not_called()
+
+        no_hit_log = RagTraceLog.objects.filter(
+            trace_id=trace_id,
+            step="rag_no_hit",
+            user=self.user
+        ).first()
+
+        self.assertIsNotNone(no_hit_log)
+        self.assertEqual(no_hit_log.detail["answer"], "知识库中没有检索到相关内容。")
+
+
+
+
 
 
 
