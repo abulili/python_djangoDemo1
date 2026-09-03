@@ -6,7 +6,7 @@ from django.http import JsonResponse
 
 from rest_framework import viewsets
 from ai_log.models import AICallLog, PromptTemplate
-from .serializers import AICallLogSerializer, PromptTemplateSerializer
+from .serializers import AICallLogSerializer, PromptTemplateSerializer,RagTraceLogSerializer
 
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -312,6 +312,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         else:
             chunks = KnowledgeChunk.objects.select_related('document').filter(document__user=request.user)
 
+        # 已经算过相关分数的知识库chunk
         scored_chunks = []
         for chunk in chunks:
             score = simple_keyword_score(query, chunk.content)
@@ -1401,6 +1402,42 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         return success_response(data)
 
 
+class RagTraceLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """RAG 步骤追踪日志，只读查询"""
+    serializer_class = RagTraceLogSerializer
+    permission_classes = [
+        # DRF权限类 必须登录，才能访问这个接口
+        IsAuthenticated,
+    ]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if user.is_superuser:
+            queryset = RagTraceLog.objects.all()
+        else:
+            queryset = RagTraceLog.objects.filter(user=user)
+
+        trace_id = self.request.query_params.get('trace_id')
+        conversation_id = self.request.query_params.get('conversation_id')
+        step = self.request.query_params.get('step')
+        success = self.request.query_params.get('success')
+
+        if trace_id:
+            queryset = queryset.filter(trace_id__icontains=trace_id)
+
+        if conversation_id:
+            queryset = queryset.filter(conversation_id=conversation_id)
+
+        if step:
+            queryset = queryset.filter(step=step)
+
+        if success in ['true', 'false']:
+            queryset = queryset.filter(success=success == 'true')
+
+        return queryset.order_by('created_at')
+        
+
 def test_python(request):
     prompt_text = "帮我写个python计划"
     duration_value = 0.5
@@ -1466,3 +1503,5 @@ def health_check(request):
             'redis': 'ok' if redis_healthy else 'error',
             'timestamp': timezone.now().isoformat(), # .isoformat()：转换成 ISO 8601 标准格式
     }, status=code)
+
+

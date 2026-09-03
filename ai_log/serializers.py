@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import AICallLog, PromptTemplate,Conversation, ConversationMessage, KnowledgeChunk, KnowledgeDocument
+from .models import (AICallLog, PromptTemplate,Conversation, ConversationMessage, KnowledgeChunk, KnowledgeDocument, RagTraceLog)
 
 # 序列化器 把 AICallLog 对象转换成JSON，或者把JSON转换成 AICallLog 对象
 class AICallLogSerializer(serializers.ModelSerializer):
@@ -113,3 +113,21 @@ class KnowledgeDocumentSerializer(serializers.ModelSerializer):
         if len(value.strip()) < 10: # strip() 是去掉首尾空格、换行
             raise serializers.ValidationError("文档内容至少10个字符")
         return value
+
+class RagTraceLogSerializer(serializers.ModelSerializer):
+    """RAG 步骤追踪日志序列化器"""
+    class Meta:
+        model = RagTraceLog
+        fields = [
+            "id",
+            "trace_id",
+            "conversation_id",
+            "step",
+            "query",
+            "detail",
+            "success",
+            "error_message",
+            "duration",
+            "created_at",
+        ]
+        read_only_fields = fields

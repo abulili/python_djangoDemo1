@@ -638,14 +638,140 @@ class AICallLogApiTests(TestCase):
             user=self.user
         ).first()
 
-        self.assertIsNone(failed_log)
+        self.assertIsNotNone(failed_log)
         self.assertFalse(failed_log.success)
         self.assertEqual(failed_log.error_message, "模型调用失败")
         self.assertEqual(failed_log.detail["model"], "deepseek")
 
+class RagTraceLogApiTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="ragtraceuser", password="123456")
+        self.other_user = User.objects.create_user(username="otherragtraceuser", password="123456")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
 
+    def test_filter_rag_trace_logs_by_trace_id(self):
+        RagTraceLog.objects.create(
+            user=self.user,
+            trace_id="trace-aaa-001",
+            conversation_id="conv-001",
+            step="retrieve_chunks",
+            query="stream3",
+            # 命中数量，找到几个chunk就是几
+            detail={"hit_count": 1},
+        )
 
+        RagTraceLog.objects.create(
+            user=self.other_user,
+            trace_id="trace-bbb-002",
+            conversation_id="conv-002",
+            step="rag_done",
+            query="别的问题",
+            detail={"hit_count": 2},
+        )
 
+        response = self.client.get('/api/rag-trace-logs/', {
+            "trace_id": "aaa"
+        })
+        self.assertEqual(response.status_code, 200)
+        
+        results = response.data["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["trace_id"], "trace-aaa-001")
+        self.assertEqual(results[0]["step"], "retrieve_chunks")
+
+    def test_user_can_only_see_own_rag_trace_logs(self):
+        RagTraceLog.objects.create(
+            user=self.user,
+            trace_id="same-trace",
+            conversation_id="conv-001",
+            step="rag_done",
+            query="自己的问题",
+            detail={},
+        )
+
+        RagTraceLog.objects.create(
+            user=self.other_user,
+            trace_id="same-trace",
+            conversation_id="conv-002",
+            step="rag_done",
+            query="别人的问题",
+            detail={},
+        )
+
+        response = self.client.get("/api/rag-trace-logs/", {
+            "trace_id": "same-trace",
+        })
+
+        self.assertEqual(response.status_code, 200)
+
+        results = response.data["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["query"], "自己的问题")
+
+    def test_filter_rag_trace_logs_by_step(self):
+        # 验证 GET /api/rag-trace-logs/?step=retrieve_chunks
+        # 只返回步骤
+        RagTraceLog.objects.create(
+            user=self.user,
+            trace_id="trace-001",
+            conversation_id="conv-001",
+            step="retrieve_chunks",
+            query="stream3",
+            detail={"hit_count": 1},
+        )
+
+        RagTraceLog.objects.create(
+            user=self.user,
+            trace_id="trace-001",
+            conversation_id="conv-001",
+            step="rag_done",
+            query="stream3",
+            detail={"answer_length": 20},
+        )
+
+        response = self.client.get('/api/rag-trace-logs/', {
+            "step": "retrieve_chunks"
+        })
+        self.assertEqual(response.status_code, 200)
+
+        results = response.data["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["step"], "retrieve_chunks")
+
+    def test_filter_rag_trace_logs_by_failed_status(self):
+        RagTraceLog.objects.create(
+            user=self.user,
+            trace_id="trace-success",
+            conversation_id="conv-001",
+            step="rag_done",
+            query="成功的问题",
+            detail={},
+            success=True,
+        )
+
+        RagTraceLog.objects.create(
+            user=self.user,
+            trace_id="trace-failed",
+            conversation_id="conv-002",
+            step="call_model",
+            query="失败的问题",
+            detail={"model": "deepseek"},
+            success=False,
+            error_message="模型调用失败",
+        )
+
+        response = self.client.get("/api/rag-trace-logs/", {
+            "success": "false",
+        })
+
+        self.assertEqual(response.status_code, 200)
+
+        results = response.data["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["trace_id"], "trace-failed")
+        self.assertEqual(results[0]["success"], False)
+        self.assertEqual(results[0]["error_message"], "模型调用失败")
 
 
 
