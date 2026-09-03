@@ -590,6 +590,59 @@ class AICallLogApiTests(TestCase):
         self.assertIsNotNone(no_hit_log)
         self.assertEqual(no_hit_log.detail["answer"], "知识库中没有检索到相关内容。")
 
+    @patch("ai_log.views.call_ai_service")
+    def test_ask_creates_failed_call_model_trace_log(self, mock_call_ai_service):
+        """
+        知识库命中了
+        -> call_ai_service 被调用
+        -> call_ai_service 返回 success=False
+        -> ask 返回 500
+        -> RagTraceLog 里记录 step=call_model 且 success=False
+        """
+        trace_id="test-rag-call-model-failed-001"
+        conversation_id="test-rag-call-model-conversation-001"
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="AI日志项目说明",
+            content="stream3 使用 conversation_id 实现上下文会话"
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id 实现上下文会话",
+            chunk_index=0
+        )
+
+        mock_call_ai_service.return_value = ({
+            "reply": "模型调用失败",
+            "duration": 0.5,
+        }, False)
+
+        response = self.client.post("/api/knowledge-documents/ask/",
+            {
+                "query": "stream3 是怎么实现上下文会话的？",
+                "top_k": 3,
+                "model": "deepseek",
+                "conversation_id": conversation_id,
+            },
+            format="json",
+            HTTP_X_TRACE_ID=trace_id,
+        )
+        self.assertEqual(response.status_code, 500)
+        
+        failed_log = RagTraceLog.objects.filter(
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="call_model",
+            user=self.user
+        ).first()
+
+        self.assertIsNone(failed_log)
+        self.assertFalse(failed_log.success)
+        self.assertEqual(failed_log.error_message, "模型调用失败")
+        self.assertEqual(failed_log.detail["model"], "deepseek")
+
 
 
 
