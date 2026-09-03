@@ -14,7 +14,7 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name='RagTraceLog',
+            name='AiTraceStepLog',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('trace_id', models.CharField(db_index=True, max_length=64, verbose_name='链路跟踪ID')),

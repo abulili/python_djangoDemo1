@@ -163,20 +163,20 @@ class KnowledgeChunk(models.Model):
     def __str__(self):
         return f"{self.document.title} - 切片 {self.chunk_index}"
         
-class RagTraceLog(models.Model):
-    """RAG 问答步骤跟踪日志"""
+class AiTraceStepLog(models.Model):
+    """AI 问答步骤跟踪日志"""
 
     """
     AICallLog.success：
     这次 AI 调用整体成功了吗
 
-    RagTraceLog.success：
+    AiTraceStepLog.success：
     某个步骤成功了吗
 
     所以需要独立记录，因为单一职责
 
     AICallLog：结果表
-    RagTraceLog：过程表
+    AiTraceStepLog：过程表
     ConversationMessage：对话内容表
     Conversation：会话主表
     User：用户表
@@ -194,9 +194,9 @@ class RagTraceLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
 
     class Meta:
-        verbose_name="RAG步骤追踪日志"
+        verbose_name="AI请求步骤追踪日志"
         # verbose_name_plural：Django Admin 后台里显示的复数名称。
-        verbose_name_plural="RAG步骤追踪日志"
+        verbose_name_plural="AI请求步骤追踪日志"
         ordering=["created_at"]
 
     def __str__(self):

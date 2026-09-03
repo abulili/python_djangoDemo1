@@ -5,7 +5,7 @@ from django.contrib import admin
 from django.urls import path, include
 from django.http import JsonResponse
 from rest_framework.routers import DefaultRouter
-from ai_log.views import (AICallLogViewSet, PromptTemplateViewSet, MyCustomAPIView, health_check, KnowledgeDocumentViewSet, RagTraceLogViewSet)
+from ai_log.views import (AICallLogViewSet, PromptTemplateViewSet, MyCustomAPIView, health_check, KnowledgeDocumentViewSet, AiTraceStepLogViewSet)
 from rest_framework_simplejwt.views import TokenObtainPairView,TokenRefreshView
 
 def handler404(request, exception):
@@ -28,7 +28,7 @@ router = DefaultRouter()
 router.register(r'logs', AICallLogViewSet, basename='log')
 router.register(r'prompt-templates', PromptTemplateViewSet, basename='prompt-template')
 router.register(r'knowledge-documents', KnowledgeDocumentViewSet, basename='knowledge-document')
-router.register(r"rag-trace-logs", RagTraceLogViewSet, basename="rag-trace-log")
+router.register(r"rag-trace-logs", AiTraceStepLogViewSet, basename="rag-trace-log")
 
 urlpatterns = [
     path('admin/', admin.site.urls),

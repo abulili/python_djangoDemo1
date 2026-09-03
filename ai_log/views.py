@@ -6,7 +6,7 @@ from django.http import JsonResponse
 
 from rest_framework import viewsets
 from ai_log.models import AICallLog, PromptTemplate
-from .serializers import AICallLogSerializer, PromptTemplateSerializer,RagTraceLogSerializer
+from .serializers import AICallLogSerializer, PromptTemplateSerializer,AiTraceStepLogSerializer
 
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -56,7 +56,7 @@ import uuid
 
 from .models import (
     AICallLog, PromptTemplate, Conversation, ConversationMessage, KnowledgeChunk, KnowledgeDocument,
-    RagTraceLog
+    AiTraceStepLog
 )
 from .serializers import KnowledgeDocumentSerializer, KnowledgeChunkSerializer
 
@@ -350,7 +350,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=request.user,
             trace_id=trace_id,
             conversation_id=conversation_id,
@@ -383,7 +383,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         scored_chunks.sort(key=lambda item: item['score'], reverse=True)
         top_chunks = scored_chunks[:top_k]
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=request.user,
             trace_id=trace_id,
             conversation_id=conversation_id,
@@ -400,7 +400,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         if not top_chunks:
             answer = "知识库中没有检索到相关内容。"
 
-            RagTraceLog.objects.create(
+            AiTraceStepLog.objects.create(
                 user=request.user,
                 trace_id=trace_id,
                 conversation_id=conversation_id,
@@ -448,7 +448,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             list
             dict
         """
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=request.user,
             trace_id=trace_id,
             conversation_id=conversation_id,
@@ -479,7 +479,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
                 trace_id=getattr(request, "trace_id", ""),
             )
 
-            RagTraceLog.objects.create(
+            AiTraceStepLog.objects.create(
                 user=request.user,
                 trace_id=trace_id,
                 conversation_id=conversation_id,
@@ -518,7 +518,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             assistant_content=assistant_content,
         )
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=request.user,
             trace_id=trace_id,
             conversation_id=conversation_id,
@@ -1410,9 +1410,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         logs = self.get_queryset().filter(trace_id=trace_id).order_by('call_time')
 
         if request.user.is_superuser:
-            rag_steps = RagTraceLog.objects.filter(trace_id=trace_id).order_by('created_at')
+            rag_steps = AiTraceStepLog.objects.filter(trace_id=trace_id).order_by('created_at')
         else:
-            rag_steps = RagTraceLog.objects.filter(trace_id=trace_id, user=request.user).order_by('created_at')
+            rag_steps = AiTraceStepLog.objects.filter(trace_id=trace_id, user=request.user).order_by('created_at')
 
         if not logs.exists() and not rag_steps.exists():
             return error_response(
@@ -1423,7 +1423,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
         # logs--QuerySet  many=True--传进来的不是一条记录，而是一批记录
         log_data = AICallLogSerializer(logs, many=True).data
-        step_data = RagTraceLogSerializer(rag_steps, many=True).data
+        step_data = AiTraceStepLogSerializer(rag_steps, many=True).data
 
         failed_steps = [item for item in step_data if not item["success"]]
         total_duration  = sum([item.get("duration") or 0 for item in log_data])
@@ -1443,9 +1443,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
 
 
-class RagTraceLogViewSet(viewsets.ReadOnlyModelViewSet):
-    """RAG 步骤追踪日志，只读查询"""
-    serializer_class = RagTraceLogSerializer
+class AiTraceStepLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """AI请求步骤追踪日志，只读查询"""
+    serializer_class = AiTraceStepLogSerializer
     permission_classes = [
         # DRF权限类 必须登录，才能访问这个接口
         IsAuthenticated,
@@ -1455,9 +1455,9 @@ class RagTraceLogViewSet(viewsets.ReadOnlyModelViewSet):
         user = self.request.user
 
         if user.is_superuser:
-            queryset = RagTraceLog.objects.all()
+            queryset = AiTraceStepLog.objects.all()
         else:
-            queryset = RagTraceLog.objects.filter(user=user)
+            queryset = AiTraceStepLog.objects.filter(user=user)
 
         trace_id = self.request.query_params.get('trace_id')
         conversation_id = self.request.query_params.get('conversation_id')

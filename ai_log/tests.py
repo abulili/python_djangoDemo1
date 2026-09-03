@@ -12,7 +12,7 @@ from .models import (
     ConversationMessage,
     KnowledgeChunk,
     KnowledgeDocument,
-    RagTraceLog,
+    AiTraceStepLog,
 )
 from .views import split_text_to_chunks, simple_keyword_score
 from .services import calculate_cost
@@ -540,7 +540,7 @@ class AICallLogApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
 
-        trace_logs = RagTraceLog.objects.filter(
+        trace_logs = AiTraceStepLog.objects.filter(
             trace_id=trace_id,
             conversation_id=conversation_id,
             user=self.user
@@ -553,7 +553,7 @@ class AICallLogApiTests(TestCase):
         self.assertIn("build_prompt", steps)
         self.assertIn("rag_done", steps)
 
-        retrieve_log = RagTraceLog.objects.filter(
+        retrieve_log = AiTraceStepLog.objects.filter(
             trace_id=trace_id,
             step="retrieve_chunks",
             user=self.user
@@ -581,7 +581,7 @@ class AICallLogApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         mock_call_ai_service.assert_not_called()
 
-        no_hit_log = RagTraceLog.objects.filter(
+        no_hit_log = AiTraceStepLog.objects.filter(
             trace_id=trace_id,
             step="rag_no_hit",
             user=self.user
@@ -597,7 +597,7 @@ class AICallLogApiTests(TestCase):
         -> call_ai_service 被调用
         -> call_ai_service 返回 success=False
         -> ask 返回 500
-        -> RagTraceLog 里记录 step=call_model 且 success=False
+        -> AiTraceStepLog 里记录 step=call_model 且 success=False
         """
         trace_id="test-rag-call-model-failed-001"
         conversation_id="test-rag-call-model-conversation-001"
@@ -631,7 +631,7 @@ class AICallLogApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 500)
         
-        failed_log = RagTraceLog.objects.filter(
+        failed_log = AiTraceStepLog.objects.filter(
             trace_id=trace_id,
             conversation_id=conversation_id,
             step="call_model",
@@ -643,7 +643,7 @@ class AICallLogApiTests(TestCase):
         self.assertEqual(failed_log.error_message, "模型调用失败")
         self.assertEqual(failed_log.detail["model"], "deepseek")
 
-class RagTraceLogApiTests(TestCase):
+class AiTraceStepLogApiTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="ragtraceuser", password="123456")
         self.other_user = User.objects.create_user(username="otherragtraceuser", password="123456")
@@ -651,7 +651,7 @@ class RagTraceLogApiTests(TestCase):
         self.client.force_authenticate(user=self.user)
 
     def test_filter_rag_trace_logs_by_trace_id(self):
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.user,
             trace_id="trace-aaa-001",
             conversation_id="conv-001",
@@ -661,7 +661,7 @@ class RagTraceLogApiTests(TestCase):
             detail={"hit_count": 1},
         )
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.other_user,
             trace_id="trace-bbb-002",
             conversation_id="conv-002",
@@ -681,7 +681,7 @@ class RagTraceLogApiTests(TestCase):
         self.assertEqual(results[0]["step"], "retrieve_chunks")
 
     def test_user_can_only_see_own_rag_trace_logs(self):
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.user,
             trace_id="same-trace",
             conversation_id="conv-001",
@@ -690,7 +690,7 @@ class RagTraceLogApiTests(TestCase):
             detail={},
         )
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.other_user,
             trace_id="same-trace",
             conversation_id="conv-002",
@@ -712,7 +712,7 @@ class RagTraceLogApiTests(TestCase):
     def test_filter_rag_trace_logs_by_step(self):
         # 验证 GET /api/rag-trace-logs/?step=retrieve_chunks
         # 只返回步骤
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.user,
             trace_id="trace-001",
             conversation_id="conv-001",
@@ -721,7 +721,7 @@ class RagTraceLogApiTests(TestCase):
             detail={"hit_count": 1},
         )
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.user,
             trace_id="trace-001",
             conversation_id="conv-001",
@@ -740,7 +740,7 @@ class RagTraceLogApiTests(TestCase):
         self.assertEqual(results[0]["step"], "retrieve_chunks")
 
     def test_filter_rag_trace_logs_by_failed_status(self):
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.user,
             trace_id="trace-success",
             conversation_id="conv-001",
@@ -750,7 +750,7 @@ class RagTraceLogApiTests(TestCase):
             success=True,
         )
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.user,
             trace_id="trace-failed",
             conversation_id="conv-002",
@@ -786,7 +786,7 @@ class RagTraceLogApiTests(TestCase):
             duration=1.2,
         )
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.user,
             trace_id=trace_id,
             conversation_id="conv-001",
@@ -796,7 +796,7 @@ class RagTraceLogApiTests(TestCase):
             success=True,
         )
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.user,
             trace_id=trace_id,
             conversation_id="conv-001",
@@ -838,7 +838,7 @@ class RagTraceLogApiTests(TestCase):
             trace_id=trace_id,
         )
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=self.user,
             trace_id=trace_id,
             conversation_id="conv-own",
@@ -847,7 +847,7 @@ class RagTraceLogApiTests(TestCase):
             detail={},
         )
 
-        RagTraceLog.objects.create(
+        AiTraceStepLog.objects.create(
             user=other_user,
             trace_id=trace_id,
             conversation_id="conv-other",
