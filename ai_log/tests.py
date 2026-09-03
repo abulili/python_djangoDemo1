@@ -670,7 +670,7 @@ class AiTraceStepLogApiTests(TestCase):
             detail={"hit_count": 2},
         )
 
-        response = self.client.get('/api/rag-trace-logs/', {
+        response = self.client.get('/api/ai-trace-step-logs/', {
             "trace_id": "aaa"
         })
         self.assertEqual(response.status_code, 200)
@@ -699,7 +699,7 @@ class AiTraceStepLogApiTests(TestCase):
             detail={},
         )
 
-        response = self.client.get("/api/rag-trace-logs/", {
+        response = self.client.get("/api/ai-trace-step-logs/", {
             "trace_id": "same-trace",
         })
 
@@ -710,7 +710,7 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(results[0]["query"], "自己的问题")
 
     def test_filter_rag_trace_logs_by_step(self):
-        # 验证 GET /api/rag-trace-logs/?step=retrieve_chunks
+        # 验证 GET /api/ai-trace-step-logs/?step=retrieve_chunks
         # 只返回步骤
         AiTraceStepLog.objects.create(
             user=self.user,
@@ -730,7 +730,7 @@ class AiTraceStepLogApiTests(TestCase):
             detail={"answer_length": 20},
         )
 
-        response = self.client.get('/api/rag-trace-logs/', {
+        response = self.client.get('/api/ai-trace-step-logs/', {
             "step": "retrieve_chunks"
         })
         self.assertEqual(response.status_code, 200)
@@ -761,7 +761,7 @@ class AiTraceStepLogApiTests(TestCase):
             error_message="模型调用失败",
         )
 
-        response = self.client.get("/api/rag-trace-logs/", {
+        response = self.client.get("/api/ai-trace-step-logs/", {
             "success": "false",
         })
 
@@ -773,7 +773,7 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(results[0]["success"], False)
         self.assertEqual(results[0]["error_message"], "模型调用失败")
 
-    def test_get_trace_detail_returns_ai_log_and_rag_step(self):
+    def test_get_trace_detail_returns_ai_log_and_trace_steps(self):
         trace_id = "trace-detail-001"
 
         AICallLog.objects.create(
@@ -809,12 +809,16 @@ class AiTraceStepLogApiTests(TestCase):
         response = self.client.get(f"/api/logs/trace/{trace_id}/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["data"]["trace_id"], trace_id)
-        self.assertEqual(len(response.data["data"]["logs"]), 1)
-        self.assertEqual(len(response.data["data"]["rag_steps"]), 2)
-        self.assertEqual(response.data["data"]["summary"]["log_count"], 1)
-        self.assertEqual(response.data["data"]["summary"]["step_count"], 2)
-        self.assertEqual(response.data["data"]["summary"]["has_failed_step"], False)
+        
+        data = response.data["data"]
+        self.assertEqual(data["trace_id"], trace_id)
+        self.assertEqual(len(data["logs"]), 1)
+        self.assertEqual(len(data["steps"]), 2)
+        self.assertEqual(data["steps"], data["rag_steps"])
+        self.assertEqual(data["steps"][0]["step"], "retrieve_chunks")
+        self.assertEqual(data["summary"]["log_count"], 1)
+        self.assertEqual(data["summary"]["step_count"], 2)
+        self.assertFalse(data["summary"]["has_failed_step"])
 
     def test_trace_detail_only_returns_current_user_data(self):
         other_user = User.objects.create_user(username="traceother", password="123456")
@@ -863,10 +867,10 @@ class AiTraceStepLogApiTests(TestCase):
         data = response.data["data"]
 
         self.assertEqual(len(data["logs"]), 1)
+        self.assertEqual(len(data["steps"]), 1)
+        self.assertEqual(data["steps"], data["rag_steps"])
         self.assertEqual(data["logs"][0]["prompt"], "自己的问题")
-
-        self.assertEqual(len(data["rag_steps"]), 1)
-        self.assertEqual(data["rag_steps"][0]["query"], "自己的问题")
+        self.assertEqual(data["steps"][0]["query"], "自己的问题")
 
     @patch("ai_log.views.OpenAI")
     def test_stream3_creates_ai_trace_steps(self, mock_openai):

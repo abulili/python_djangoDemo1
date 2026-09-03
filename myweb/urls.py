@@ -28,7 +28,7 @@ router = DefaultRouter()
 router.register(r'logs', AICallLogViewSet, basename='log')
 router.register(r'prompt-templates', PromptTemplateViewSet, basename='prompt-template')
 router.register(r'knowledge-documents', KnowledgeDocumentViewSet, basename='knowledge-document')
-router.register(r"rag-trace-logs", AiTraceStepLogViewSet, basename="rag-trace-log")
+router.register(r"ai-trace-step-logs", AiTraceStepLogViewSet, basename="rag-trace-log")
 
 urlpatterns = [
     path('admin/', admin.site.urls),
