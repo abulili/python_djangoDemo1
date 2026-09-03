@@ -773,6 +773,100 @@ class RagTraceLogApiTests(TestCase):
         self.assertEqual(results[0]["success"], False)
         self.assertEqual(results[0]["error_message"], "模型调用失败")
 
+    def test_get_trace_detail_returns_ai_log_and_rag_step(self):
+        trace_id = "trace-detail-001"
+
+        AICallLog.objects.create(
+            user=self.user,
+            prompt="stream3 是怎么实现上下文会话的？",
+            response="stream3 使用 conversation_id。",
+            model_name="deepseek",
+            success=True,
+            trace_id=trace_id,
+            duration=1.2,
+        )
+
+        RagTraceLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id="conv-001",
+            step="retrieve_chunks",
+            query="stream3",
+            detail={"hit_count": 1},
+            success=True,
+        )
+
+        RagTraceLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id="conv-001",
+            step="rag_done",
+            query="stream3",
+            detail={"answer_length": 20},
+            success=True,
+        )
+
+        response = self.client.get(f"/api/logs/trace/{trace_id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["trace_id"], trace_id)
+        self.assertEqual(len(response.data["data"]["logs"]), 1)
+        self.assertEqual(len(response.data["data"]["rag_steps"]), 2)
+        self.assertEqual(response.data["data"]["summary"]["log_count"], 1)
+        self.assertEqual(response.data["data"]["summary"]["step_count"], 2)
+        self.assertEqual(response.data["data"]["summary"]["has_failed_step"], False)
+
+    def test_trace_detail_only_returns_current_user_data(self):
+        other_user = User.objects.create_user(username="traceother", password="123456")
+        trace_id = "same-trace-detail"
+
+        AICallLog.objects.create(
+            user=self.user,
+            prompt="自己的问题",
+            response="自己的回答",
+            model_name="deepseek",
+            success=True,
+            trace_id=trace_id,
+        )
+
+        AICallLog.objects.create(
+            user=other_user,
+            prompt="别人的问题",
+            response="别人的回答",
+            model_name="deepseek",
+            success=True,
+            trace_id=trace_id,
+        )
+
+        RagTraceLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id="conv-own",
+            step="rag_done",
+            query="自己的问题",
+            detail={},
+        )
+
+        RagTraceLog.objects.create(
+            user=other_user,
+            trace_id=trace_id,
+            conversation_id="conv-other",
+            step="rag_done",
+            query="别人的问题",
+            detail={},
+        )
+
+        response = self.client.get(f"/api/logs/trace/{trace_id}/")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+
+        self.assertEqual(len(data["logs"]), 1)
+        self.assertEqual(data["logs"][0]["prompt"], "自己的问题")
+
+        self.assertEqual(len(data["rag_steps"]), 1)
+        self.assertEqual(data["rag_steps"][0]["query"], "自己的问题")
 
 
 

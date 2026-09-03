@@ -1401,6 +1401,47 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         ]
         return success_response(data)
 
+    @action(detail=False, methods=['get'], url_path='trace/(?P<trace_id>[^/.]+)')
+    def get_trace_detail(self,request,trace_id=None):
+        """
+        按 trace_id 查看一次请求的完整排查信息
+        这次请求的 AI 调用日志 + RAG 步骤日志 + 基础统计：总步骤数、是否有失败步骤、总耗时
+        """
+        logs = self.get_queryset().filter(trace_id=trace_id).order_by('call_time')
+
+        if request.user.is_superuser:
+            rag_steps = RagTraceLog.objects.filter(trace_id=trace_id).order_by('created_at')
+        else:
+            rag_steps = RagTraceLog.objects.filter(trace_id=trace_id, user=request.user).order_by('created_at')
+
+        if not logs.exists() and not rag_steps.exists():
+            return error_response(
+                "trace_id 不存在或没有权限访问",
+                code=404,
+                data={"trace_id": trace_id}
+            )
+
+        # logs--QuerySet  many=True--传进来的不是一条记录，而是一批记录
+        log_data = AICallLogSerializer(logs, many=True).data
+        step_data = RagTraceLogSerializer(rag_steps, many=True).data
+
+        failed_steps = [item for item in step_data if not item["success"]]
+        total_duration  = sum([item.get("duration") or 0 for item in log_data])
+
+        return success_response({
+            "trace_id": trace_id,
+            "logs": log_data,
+            "rag_steps": step_data,
+            "summary": {
+                "log_count": len(log_data),
+                "step_count": len(step_data),
+                "failed_step_count": len(failed_steps),
+                "has_failed_step": len(failed_steps) > 0,
+                "total_duration": total_duration,
+            }
+        })
+
+
 
 class RagTraceLogViewSet(viewsets.ReadOnlyModelViewSet):
     """RAG 步骤追踪日志，只读查询"""
@@ -1437,7 +1478,7 @@ class RagTraceLogViewSet(viewsets.ReadOnlyModelViewSet):
 
         return queryset.order_by('created_at')
         
-
+    
 def test_python(request):
     prompt_text = "帮我写个python计划"
     duration_value = 0.5
