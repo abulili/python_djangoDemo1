@@ -12,6 +12,7 @@ from .models import (
     ConversationMessage,
     KnowledgeChunk,
     KnowledgeDocument,
+    RagTraceLog,
 )
 from .views import split_text_to_chunks, simple_keyword_score
 from .services import calculate_cost
@@ -502,6 +503,68 @@ class AICallLogApiTests(TestCase):
         results = response.data["results"]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["prompt"], "自己的问题")
+
+    @patch("ai_log.views.call_ai_service")
+    def test_ask_creates_rag_trace_logs(self, mock_call_ai_service):
+        trace_id = "test-rag-trace-001"
+        conversation_id = "test-rag-conversation-trace-001"
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="AI日志项目说明",
+            content="stream3 使用 conversation_id 实现上下文会话"
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id 实现上下文会话",
+            chunk_index=0
+        )
+
+        mock_call_ai_service.return_value = ({
+            "reply": "stream3 使用 conversation_id 实现上下文会话。",
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 1.2,
+        }, True)
+
+        response = self.client.post("/api/knowledge-documents/ask/",{
+            "query": "stream3 是怎么实现上下文会话的？",
+            "top_k": 3,
+            "model": "deepseek",
+            "conversation_id": conversation_id,
+        }, format="json",HTTP_X_TRACE_ID=trace_id)
+
+        self.assertEqual(response.status_code, 200)
+
+        trace_logs = RagTraceLog.objects.filter(
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            user=self.user
+        ).order_by("created_at")
+
+        steps = [item.step for item in trace_logs]
+
+        self.assertIn("rag_start", steps)
+        self.assertIn("retrieve_chunks", steps)
+        self.assertIn("build_prompt", steps)
+        self.assertIn("rag_done", steps)
+
+        retrieve_log = RagTraceLog.objects.filter(
+            trace_id=trace_id,
+            step="retrieve_chunks",
+            user=self.user
+        ).first()
+
+        self.assertIsNotNone(retrieve_log)
+        self.assertEqual(retrieve_log.detail["hit_count"], 1)
+        self.assertEqual(retrieve_log.detail["top_k"], 3)
+        self.assertEqual(len(retrieve_log.detail["chunk_ids"]), 1)
+
+
+
 
 
 
