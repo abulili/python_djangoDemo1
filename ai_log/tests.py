@@ -19,6 +19,8 @@ from .services import calculate_cost
 
 from unittest.mock import patch
 
+from ai_log.tasks import call_ai_task4
+
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
         # 测文档切片
@@ -819,6 +821,9 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(data["summary"]["log_count"], 1)
         self.assertEqual(data["summary"]["step_count"], 2)
         self.assertFalse(data["summary"]["has_failed_step"])
+        self.assertEqual(data["summary"]["stream_step_count"], 0)
+        self.assertEqual(data["summary"]["rag_step_count"], 2)
+        self.assertEqual(data["summary"]["task_step_count"], 0)
 
     def test_trace_detail_only_returns_current_user_data(self):
         other_user = User.objects.create_user(username="traceother", password="123456")
@@ -938,9 +943,18 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertIn("call_model_start", step_names)
         self.assertIn("stream_done", step_names)
 
+        trace_response = self.client.get(f"/api/logs/trace/{trace_id}/")
+        trace_data = trace_response.data["data"]
+
         log = AICallLog.objects.filter(trace_id=trace_id).first()
         self.assertIsNotNone(log)
         self.assertTrue(log.success)
+
+        trace_response = self.client.get(f"/api/logs/trace/{trace_id}/")
+        self.assertEqual(trace_response.status_code, 200)
+        trace_data = trace_response.data["data"]
+        self.assertGreater(trace_data["summary"]["stream_step_count"], 0)
+        self.assertEqual(trace_data["summary"]["rag_step_count"], 0)
 
         log = AICallLog.objects.filter(
             trace_id=trace_id,
@@ -953,7 +967,196 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(log.response, "你好")
         self.assertEqual(log.total_tokens, 15)
 
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_creates_trace_steps_when_success(self, mock_call_ai_service):
+        trace_id = "test-task4-trace-success"
+        conversation_id = "test-task4-conversation-success"
 
+        mock_call_ai_service.return_value = (
+            {
+                "reply": "这是非流式回答",
+                "duration": 1.23,
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "cost": 0.001,
+            },
+            True,
+        )
+
+        result = call_ai_task4(
+            "非流式测试问题",
+            self.user.id,
+            "deepseek",
+            conversation_id,
+            None,
+            None,
+            trace_id,
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["response"], "这是非流式回答")
+
+        log = AICallLog.objects.filter(trace_id=trace_id).first()
+        self.assertIsNotNone(log)
+        self.assertTrue(log.success)
+        self.assertEqual(log.conversation_id, conversation_id)
+        self.assertEqual(log.total_tokens, 15)
+
+        steps = AiTraceStepLog.objects.filter(trace_id=trace_id).order_by("created_at")
+        step_names = [item.step for item in steps]
+
+        self.assertEqual(step_names, [
+            "task_start",
+            "call_model_start",
+            "task_done",
+        ])
+
+        done_step = steps.filter(step="task_done").first()
+        self.assertIsNotNone(done_step)
+        self.assertTrue(done_step.success)
+        self.assertEqual(done_step.detail["duration"], 1.23)
+        self.assertEqual(done_step.detail["total_tokens"], 15)
+
+        mock_call_ai_service.assert_called_once()
+
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_creates_trace_steps_when_service_returns_failed(self, mock_call_ai_service):
+        trace_id = "test-task4-trace-failed"
+        conversation_id = "test-task4-conversation-failed"
+
+        mock_call_ai_service.return_value = (
+            {
+                "reply": "Agnes 返回未知状态",
+                "duration": 0.8,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cost": 0,
+            },
+            False,
+        )
+
+        result = call_ai_task4(
+            "非流式失败测试",
+            self.user.id,
+            "agnes",
+            conversation_id,
+            None,
+            None,
+            trace_id,
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["response"], "Agnes 返回未知状态")
+
+        log = AICallLog.objects.filter(trace_id=trace_id).first()
+        self.assertIsNotNone(log)
+        self.assertFalse(log.success)
+        self.assertEqual(log.model_name, "agnes")
+
+        steps = AiTraceStepLog.objects.filter(trace_id=trace_id).order_by("created_at")
+        step_names = [item.step for item in steps]
+
+        self.assertEqual(step_names, [
+            "task_start",
+            "call_model_start",
+            "task_failed",
+        ])
+
+        failed_step = steps.filter(step="task_failed").first()
+        self.assertIsNotNone(failed_step)
+        self.assertFalse(failed_step.success)
+        self.assertEqual(failed_step.error_message, "Agnes 返回未知状态")
+
+        mock_call_ai_service.assert_called_once()
+
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_creates_trace_steps_when_service_raises_exception(self, mock_call_ai_service):
+        trace_id = "test-task4-trace-exception"
+        conversation_id = "test-task4-conversation-exception"
+
+        mock_call_ai_service.side_effect = Exception("模型接口超时")
+
+        result = call_ai_task4(
+            "非流式异常测试",
+            self.user.id,
+            "deepseek",
+            conversation_id,
+            None,
+            None,
+            trace_id,
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"], "模型接口超时")
+
+        log = AICallLog.objects.filter(trace_id=trace_id).first()
+        self.assertIsNotNone(log)
+        self.assertFalse(log.success)
+        self.assertEqual(log.response, "AI调用失败：模型接口超时")
+
+        steps = AiTraceStepLog.objects.filter(trace_id=trace_id).order_by("created_at")
+        step_names = [item.step for item in steps]
+
+        self.assertEqual(step_names, [
+            "task_start",
+            "call_model_start",
+            "task_failed",
+        ])
+
+        failed_step = steps.filter(step="task_failed").first()
+        self.assertIsNotNone(failed_step)
+        self.assertFalse(failed_step.success)
+        self.assertEqual(failed_step.error_message, "模型接口超时")
+
+        mock_call_ai_service.assert_called_once()
+
+    @patch("ai_log.views.call_ai_task4.delay")
+    def test_call_company_ai4_creates_enqueue_trace_step(self, mock_delay):
+        trace_id = "test-call-company-ai4-enqueue"
+        conversation_id = "test-call-company-ai4-conversation"
+
+        class FakeTask:
+            id = "fake-task-id-001"
+
+        mock_delay.return_value = FakeTask()
+
+        response = self.client.post(
+            "/api/logs/call_company_ai4/",
+            {
+                "prompt": "非流式接口测试",
+                "model": "deepseek",
+                "conversation_id": conversation_id,
+            },
+            HTTP_X_TRACE_ID=trace_id,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["task_id"], "fake-task-id-001")
+        self.assertEqual(response.data["data"]["conversation_id"], conversation_id)
+
+        enqueue_step = AiTraceStepLog.objects.filter(
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="enqueue_task",
+        ).first()
+
+        self.assertIsNotNone(enqueue_step)
+        self.assertEqual(enqueue_step.query, "非流式接口测试")
+        self.assertEqual(enqueue_step.detail["model"], "deepseek")
+        self.assertEqual(enqueue_step.detail["has_template_vars"], False)
+
+        mock_delay.assert_called_once_with(
+            "非流式接口测试",
+            self.user.id,
+            "deepseek",
+            conversation_id,
+            None,
+            {},
+            trace_id,
+        )
 
 
 

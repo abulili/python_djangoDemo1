@@ -676,6 +676,20 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             conversation_id = str(uuid.uuid4())
 
         trace_id = getattr(request, "trace_id", "")
+
+        AiTraceStepLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="enqueue_task",
+            query=user_prompt,
+            detail={
+                "model": model_key,
+                "template_name": template_name or "",
+                "has_template_vars": bool(template_vars),
+            },
+        )
+
         # 把任务丢给 Celery，不等待
         task = call_ai_task4.delay(user_prompt, request.user.id, model_key, conversation_id, template_name, template_vars, trace_id)
         
@@ -1492,11 +1506,11 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         logs = self.get_queryset().filter(trace_id=trace_id).order_by('call_time')
 
         if request.user.is_superuser:
-            rag_steps = AiTraceStepLog.objects.filter(trace_id=trace_id).order_by('created_at')
+            trace_steps  = AiTraceStepLog.objects.filter(trace_id=trace_id).order_by('created_at')
         else:
-            rag_steps = AiTraceStepLog.objects.filter(trace_id=trace_id, user=request.user).order_by('created_at')
+            trace_steps  = AiTraceStepLog.objects.filter(trace_id=trace_id, user=request.user).order_by('created_at')
 
-        if not logs.exists() and not rag_steps.exists():
+        if not logs.exists() and not trace_steps.exists():
             return error_response(
                 "trace_id 不存在或没有权限访问",
                 code=404,
@@ -1505,10 +1519,23 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
         # logs--QuerySet  many=True--传进来的不是一条记录，而是一批记录
         log_data = AICallLogSerializer(logs, many=True).data
-        step_data = AiTraceStepLogSerializer(rag_steps, many=True).data
+        step_data = AiTraceStepLogSerializer(trace_steps, many=True).data
 
         failed_steps = [item for item in step_data if not item["success"]]
         total_duration  = sum([item.get("duration") or 0 for item in log_data])
+
+        stream_steps = [
+            item for item in step_data
+            if item["step"].startswith("stream_") or item["step"] in ["load_history", "build_messages"]
+        ]
+        rag_steps = [
+            item for item in step_data
+            if item["step"].startswith("rag_") or item["step"] in ["retrieve_chunks", "build_prompt"]
+        ]
+        task_steps = [
+            item for item in step_data
+            if item["step"].startswith("task_") or item["step"] in ["enqueue_task", "call_model_start"]
+        ]
 
         return success_response({
             "trace_id": trace_id,
@@ -1521,6 +1548,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 "failed_step_count": len(failed_steps),
                 "has_failed_step": len(failed_steps) > 0,
                 "total_duration": total_duration,
+                "stream_step_count": len(stream_steps),
+                "rag_step_count": len(rag_steps),
+                "task_step_count": len(task_steps),
             }
         })
 

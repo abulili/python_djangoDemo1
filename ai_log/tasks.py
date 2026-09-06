@@ -3,7 +3,7 @@ import logging
 from celery import shared_task
 from django.conf import settings
 from openai import OpenAI
-from .models import AICallLog
+from .models import AICallLog, AiTraceStepLog
 from django.contrib.auth.models import User
 from .services import call_ai_service
 
@@ -151,23 +151,52 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
     """
     异步调用AI模型，存结果到数据库。
     """
-
+    
     logger.info(f"开始处理AI调用，会话ID：{conversation_id}用户ID： {user_id}, prompt: {prompt[:50]}...")
     user = User.objects.get(id=user_id)
-    result, success = call_ai_service(
-        prompt=prompt,
-        model_key=model_key,
+
+    AiTraceStepLog.objects.create(
+        user=user,
+        trace_id=trace_id,
         conversation_id=conversation_id,
-        template_name=template_name,
-        template_vars=template_vars,
-        user=user
+        step="task_start",
+        query=prompt,
+        detail={
+            "model": model_key,
+            "template_name": template_name or "",
+        },
     )
+
+    AiTraceStepLog.objects.create(
+        user=user,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+        step="call_model_start",
+        query=prompt,
+        detail={
+            "model": model_key,
+            "stream": False,
+        },
+    )
+
     
+    
+    
+
     try:
+        result, success = call_ai_service(
+            prompt=prompt,
+            model_key=model_key,
+            conversation_id=conversation_id,
+            template_name=template_name,
+            template_vars=template_vars,
+            user=user
+        )
+        task_duration = result.get("duration", 0.0) or 0.0
         log = AICallLog.objects.create(
             prompt = prompt,
             response=result.get('reply', ''),
-            duration = result['duration'] if result.get('duration') else 0.0,
+            duration = task_duration,
             success=success,
             user=user,
             model_name=model_key or 'deepseek',
@@ -178,13 +207,30 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
             conversation_id=conversation_id,
             trace_id=trace_id
         )
-        logger.info(f"AI调用成功， 日志ID： {log.id}")
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="task_done" if success else "task_failed",
+            query=prompt,
+            success=success,
+            error_message="" if success else result.get("reply", "AI调用失败"),
+            detail={
+                "success": success,
+                "duration": task_duration,
+                "total_tokens": result.get("total_tokens", 0),
+                "cost": result.get("cost", 0.0),
+                "model": model_key,
+            },
+        )
+
+        logger.info(f"AI调用完成，日志ID：{log.id}，success={success}")
         return {
-            'status': 'success',
-            'log_id': log.id,
+            "status": "success" if success else "error",
+            "log_id": log.id,
             'prompt': prompt,
-            'response': result['reply'],
-            'duration': result['duration'] if result.get('duration') else 0.0,
+            'response': result.get("reply", ""),
+            'duration': task_duration,
             'model_name':model_key,
             'tokens': result.get('total_tokens',0),
             'cost': result.get('cost', 0.0),
@@ -194,20 +240,30 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
         print('call_ai_task2 error',str(e))
         logger.error(f"AI调用失败：{e}")
         # 存一条失败的日志
-        try:
-            user = User.objects.get(id=user_id)
-            AICallLog.objects.create(
-                prompt=prompt,
-                response=f"AI调用失败：{result.get('reply',{str(e)})}",
-                duration=result.get('duration', 0.0) if result.get('duration') else 0.0,
-                success=False,
-                user=user,
-                model_name=model_key or 'deepseek',
-                conversation_id=conversation_id,
-                trace_id=trace_id,
-            )
-        except:
-            pass
+        user = User.objects.get(id=user_id)
+        AICallLog.objects.create(
+            prompt=prompt,
+            response=f"AI调用失败：{str(e)}",
+            duration=0.0,
+            success=False,
+            user=user,
+            model_name=model_key or 'deepseek',
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+        )
+        AiTraceStepLog.objects.create(
+            user=user if "user" in locals() else None,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="task_failed",
+            query=prompt,
+            success=False,
+            error_message=str(e),
+            detail={
+                "model": model_key,
+            },
+        )
+        
         return {
             'status': 'error',
             'error': str(e),
