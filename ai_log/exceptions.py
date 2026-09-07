@@ -8,7 +8,7 @@ from django.http import Http404
 logger = logging.getLogger(__name__)
 
 def custom_exception_handler(exc, context):
-    print(">>> 异常处理器被调用了！")
+    logger.exception(">>> 异常处理器被调用了！")
     """
     自定义异常处理：统一返回JSON格式的错误信息
     """

@@ -588,13 +588,13 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         # 查缓存
         cached_result = cache.get(cache_key)
         if cached_result:
-            print(">>>> 命中 Redis 缓存！")
+            logger.debug(">>>> 命中 Redis 缓存！")
             return cached_result,True
         
         # 缓存里没有，调用AI接口
         logger.info(f"调用 DeepSeek API，prompt: {prompt[:50]}...")
         client = OpenAI(api_key=settings.DEEPSEEK_API_KEY,base_url="https://api.deepseek.com")
-        # print(os.getenv("DEEPSEEK_API_KEY"))
+        # logger.debug(os.getenv("DEEPSEEK_API_KEY"))
         
         for attempt in range(retries):
             try: 
@@ -609,11 +609,11 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 ai_reply = response.choices[0].message.content
                 # 缓存结果(1小时过期)
                 cache.set(cache_key, ai_reply, timeout=3600)
-                print('>>>> 已缓存AI回复')
+                logger.debug('>>>> 已缓存AI回复')
                 logger.info(f"DeepSeek API 调用成功，返回长度: {len(ai_reply)}")
                 return ai_reply,True
             except Exception as e:
-                # print(f"第{attempt + 1}次AI调用失败{e}")
+                # logger.debug(f"第{attempt + 1}次AI调用失败{e}")
                 # if attempt < retries - 1:
                 #     time.sleep(1) # 等待1秒后重试
                 # return f"AI调用失败{str(e)}",False
@@ -627,7 +627,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     @throttle_classes([AICallThrottle])
     @action(detail=False, methods=['post'],url_path='call_company_ai3')
     def create2(self, request):
-        print(">>>> create 被调用了！")
+        logger.debug(">>>> create 被调用了！")
         user_prompt = request.data.get('prompt')
         model_key = request.data.get('model',settings.DEFAULT_AI_MODEL)
         # logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
@@ -653,7 +653,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     @throttle_classes([AICallThrottle])
     @action(detail=False, methods=['post'],url_path='call_company_ai4')
     def create4(self, request):
-        print(">>>> create 被调用了！")
+        logger.debug(">>>> create 被调用了！")
         user_prompt = request.data.get('prompt')
         model_key = request.data.get('model',getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
         conversation_id = request.data.get('conversation_id')
@@ -728,13 +728,13 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
     # 多用户，重写DRF自动生成的接口
     def get_object(self):
-        print(">>> get_object 被调用了！")
+        logger.debug(">>> get_object 被调用了！")
         # return super().get_object()
         obj = super().get_object()
         if self.request.user.is_superuser:
             return obj
         if obj.user != self.request.user:
-            print(">>> 准备抛出 PermissionDenied！")
+            logger.debug(">>> 准备抛出 PermissionDenied！")
             # PermissionDenied drf的异常类，这样才能被识别
             raise PermissionDenied("你没有权限操作这条日志")
             """
@@ -759,12 +759,12 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         # 查缓存
         cached_result = cache.get(cache_key)
         if cached_result:
-            print(">>>> 命中 Redis 缓存！")
+            logger.debug(">>>> 命中 Redis 缓存！")
             return cached_result,True
         response = StreamingHttpResponse(self.stream_ai_response(prompt),content_type='text/event-stream')
         response['Cache-Control'] = 'no-cache'
         cache.set(cache_key, response, timeout=3600)
-        print('>>>> 已缓存AI回复')
+        logger.debug('>>>> 已缓存AI回复')
         """
         流式响应本身不适合缓存。
         流式响应的价值在于“实时生成”，而缓存的价值在于“复用结果”。这两个目标在流式场景下是矛盾的
@@ -796,7 +796,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             if full_response:
                 complete_reply = ''.join(full_response)
                 cache.set(cache_key, complete_reply, timeout=3600)
-                print('>>>> 已缓存AI回复')
+                logger.debug('>>>> 已缓存AI回复')
             yield f"data: {json.dumps({'done': True})}\n\n" 
         except Exception as e:
             yield f"data:{json.dumps({'error':str(e)})}\n\n"
@@ -816,7 +816,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         # 查缓存
         cached_result = cache.get(cache_key)
         if cached_result:
-            print(">>>> 命中 Redis 缓存！")
+            logger.debug(">>>> 命中 Redis 缓存！")
             def fake_stream():
                 # 按字拆分
                 for char in cached_result:
@@ -826,7 +826,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         # 缓存未命中
         response = StreamingHttpResponse(self.stream_ai_response_with_cache(prompt,cache_key),content_type='text/event-stream')
         response['Cache-Control'] = 'no-cache'
-        print('>>>> 已缓存AI回复')
+        logger.debug('>>>> 已缓存AI回复')
         """
         流式响应本身不适合缓存。
         流式响应的价值在于“实时生成”，而缓存的价值在于“复用结果”。这两个目标在流式场景下是矛盾的
@@ -1092,7 +1092,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         # 用 state 判断任务状态
         state = task.state
 
-        print('state',state)
+        logger.debug('state',state)
 
         if state == 'PENDING':
             return success_response({
@@ -1126,7 +1126,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     # 你要实现的代码（AI 自动填 response）
     @throttle_classes([AICallThrottle])
     def create(self, request):
-        print(">>>> create 被调用了！")
+        logger.debug(">>>> create 被调用了！")
         user_prompt = request.data.get('prompt')
         # logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
         if not user_prompt:
@@ -1404,7 +1404,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     def update_by_json(self,request):
         # 通过JSON里的id来更新 
         log_id = request.data.get("id")
-        print(f"收到的 log_id: {log_id}, 类型: {type(log_id)}")  # ← 加这一行
+        logger.debug(f"收到的 log_id: {log_id}, 类型: {type(log_id)}")  # ← 加这一行
         if not log_id:
             return Response({'error': '请提供 id'}, status=400)
         try: 
@@ -1619,7 +1619,7 @@ def test_python1(request):
     duration_value = 0.5
     is_success = True
 
-    print(type(is_success))
+    logger.debug(type(is_success))
 
     # 列表和字典
 

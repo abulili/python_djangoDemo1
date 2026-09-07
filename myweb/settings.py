@@ -34,7 +34,7 @@ ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
 # load_dotenv()
 
 # DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-# print("Key from env:", os.getenv("DEEPSEEK_API_KEY"))  # 看看能不能打印出来
+# logger.debug("Key from env:", os.getenv("DEEPSEEK_API_KEY"))  # 看看能不能打印出来
 
 import os
 from dotenv import load_dotenv
@@ -52,7 +52,7 @@ load_dotenv(dotenv_path=BASE_DIR / '.env', override=True)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 # 验证是否加载成功（启动时会打印）
-print(f"DEEPSEEK_API_KEY loaded: {DEEPSEEK_API_KEY[:10]}...")
+logger.debug(f"DEEPSEEK_API_KEY loaded: {DEEPSEEK_API_KEY[:10]}...")
 
 # Application definition
 

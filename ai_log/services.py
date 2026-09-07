@@ -26,7 +26,7 @@ def get_coversation_history(conversation_id, user=None):
     # 从redis获取对话历史
     key = f"coversation:{conversation_id}"
     history = cache.get(key)
-    print('history', history)
+    logger.debug('history', history)
     if history:
         return json.loads(history)
 
@@ -209,14 +209,14 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
     
     # 如果指定了模板，用模板渲染prompt
     if template_name:
-        print('template_name', template_name)
-        print('template_vars', template_vars)
+        logger.debug('template_name', template_name)
+        logger.debug('template_vars', template_vars)
         rendered_prompt = get_prompt(template_name, template_vars)
         if rendered_prompt:
             prompt = rendered_prompt
         else:
             logger.warning(f"模板{template_name}不存在或未启用")
-    print('prompt', prompt)
+    logger.debug('prompt', prompt)
     if not model_key:
         model_key = getattr(settings,'DEFAULT_AI_MODEL', 'deepseek')
     model_config = settings.AI_MODELS.get(model_key)
@@ -227,7 +227,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
     cache_key = f"ai_response:{model_key}{conversation_id}:{prompt[:50]}"
     # 消息列表
     messages = []
-    print('messages1', messages, conversation_id)
+    logger.debug('messages1', messages, conversation_id)
     # 如果有会话ID，加载历史对话
     if conversation_id:
         history = get_coversation_history(conversation_id, user=user)
@@ -235,7 +235,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
 
     # 追加当前用户问题
     messages.append({"role": "user","content": prompt})
-    print('messages2', messages)
+    logger.debug('messages2', messages)
     # 查缓存
     cached_result = cache.get(cache_key)
     if cached_result:
@@ -258,7 +258,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
             'from_cache': True,
             'duration': 0.0,
         },True
-    print('messages3', messages)
+    logger.debug('messages3', messages)
     # 调用AI
     client = OpenAI(
         api_key = model_config['api_key'],
@@ -266,7 +266,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
     )
     start_time = time.time()
 
-    print('messages4', messages)
+    logger.debug('messages4', messages)
 
     try:
         response = client.chat.completions.create(

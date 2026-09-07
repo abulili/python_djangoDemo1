@@ -62,7 +62,7 @@ class AICallLog(models.Model):
     生效位置
     
     Django Admin 后台	日志列表里显示的文本
-    Django Shell	print(log) 或直接输入 log 时显示
+    Django Shell	logger.debug(log) 或直接输入 log 时显示
     关联对象的外键下拉框	选择关联对象时显示的内容
     """
     def __str__(self):
