@@ -900,6 +900,8 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 },
             )
 
+            model_start_time = time.time()
+
             response = client.chat.completions.create(
                 model=model_config['default_model'],
                 messages=messages,
@@ -968,6 +970,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 conversation_id=conversation_id,
                 step="stream_done",
                 query=prompt,
+                duration=duration,
                 detail={
                     "answer_length": len(ai_reply),
                     "prompt_tokens": prompt_tokens,
@@ -1015,6 +1018,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 query=prompt,
                 success=False,
                 error_message=str(e),
+                duration=duration,
                 detail={
                     "model": model_key,
                 },

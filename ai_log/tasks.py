@@ -212,6 +212,7 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
             trace_id=trace_id,
             conversation_id=conversation_id,
             step="task_done" if success else "task_failed",
+            duration=task_duration,
             query=prompt,
             success=success,
             error_message="" if success else result.get("reply", "AI调用失败"),
@@ -257,13 +258,14 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
             conversation_id=conversation_id,
             step="task_failed",
             query=prompt,
+            duration=0.0,
             success=False,
             error_message=str(e),
             detail={
                 "model": model_key,
             },
         )
-        
+
         return {
             'status': 'error',
             'error': str(e),

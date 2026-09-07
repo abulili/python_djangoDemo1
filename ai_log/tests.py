@@ -967,6 +967,10 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(log.response, "你好")
         self.assertEqual(log.total_tokens, 15)
 
+        done_step = steps.filter(step="stream_done").first()
+        self.assertIsNotNone(done_step)
+        self.assertGreaterEqual(done_step.duration, 0)
+
     @patch("ai_log.tasks.call_ai_service")
     def test_call_ai_task4_creates_trace_steps_when_success(self, mock_call_ai_service):
         trace_id = "test-task4-trace-success"
@@ -1014,6 +1018,7 @@ class AiTraceStepLogApiTests(TestCase):
 
         done_step = steps.filter(step="task_done").first()
         self.assertIsNotNone(done_step)
+        self.assertEqual(done_step.duration, 1.23)
         self.assertTrue(done_step.success)
         self.assertEqual(done_step.detail["duration"], 1.23)
         self.assertEqual(done_step.detail["total_tokens"], 15)
@@ -1065,6 +1070,7 @@ class AiTraceStepLogApiTests(TestCase):
         ])
 
         failed_step = steps.filter(step="task_failed").first()
+        self.assertEqual(failed_step.duration, 0.8)
         self.assertIsNotNone(failed_step)
         self.assertFalse(failed_step.success)
         self.assertEqual(failed_step.error_message, "Agnes 返回未知状态")
@@ -1157,6 +1163,79 @@ class AiTraceStepLogApiTests(TestCase):
             {},
             trace_id,
         )
+
+    def test_trace_detail_counts_task_steps(self):
+        trace_id = "trace-task-summary-001"
+        conversation_id = "conv-task-summary-001"
+
+        AICallLog.objects.create(
+            user=self.user,
+            prompt="非流式任务测试",
+            response="非流式任务回答",
+            model_name="deepseek",
+            success=True,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            duration=1.2,
+        )
+
+        AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="enqueue_task",
+            query="非流式任务测试",
+            detail={},
+            success=True,
+        )
+
+        AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="task_start",
+            query="非流式任务测试",
+            detail={},
+            success=True,
+        )
+
+        AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="call_model_start",
+            query="非流式任务测试",
+            detail={"stream": False},
+            success=True,
+        )
+
+        AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="task_done",
+            query="非流式任务测试",
+            detail={},
+            success=True,
+        )
+
+        response = self.client.get(f"/api/logs/trace/{trace_id}/")
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+
+        """
+        item["step"].startswith("task_") or item["step"] in ["enqueue_task", "call_model_start"]
+
+        enqueue_task       算
+        task_start         算
+        call_model_start   算
+        task_done          算
+        """
+        self.assertEqual(data["summary"]["task_step_count"], 4)
+        self.assertEqual(data["summary"]["stream_step_count"], 0)
+        self.assertEqual(data["summary"]["rag_step_count"], 0)
+        self.assertEqual(data["summary"]["step_count"], 4)
 
 
 
