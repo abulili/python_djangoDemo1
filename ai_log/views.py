@@ -70,6 +70,8 @@ from .services import (
 
 import re
 
+from .utils import check_user_ai_rate_limit
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -336,9 +338,11 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "scored_chunks": scored_chunks[:top_k],
         })
 
+    @throttle_classes([AICallThrottle])
     @action(detail=False, methods=['post'], url_path='ask')
     def ask(self, request):
         query = request.data.get('query', '')
+
         top_k = int(request.data.get('top_k', 3)) 
         model_key = request.data.get('model', getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
         conversation_id = request.data.get('conversation_id')
@@ -346,6 +350,19 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
 
         if not query.strip():
             return error_response('请提供query', code=400)
+
+        allowed, current_count = check_user_ai_rate_limit(request.user.id)
+
+        if not allowed:
+            return error_response(
+                "请求过于频繁，请稍后再试",
+                code=429,
+                data={
+                    "current_count": current_count,
+                    "limit": 10,
+                    "window_seconds": 60,
+                }
+            )
 
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
@@ -664,6 +681,19 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             return Response(
                 {'error': '请提供prompt字段'},
                 status=status.HTTP_400_BAD_REQUEST
+            )
+
+        allowed, current_count = check_user_ai_rate_limit(request.user.id)
+
+        if not allowed:
+            return error_response(
+                "请求过于频繁，请稍后再试",
+                code=429,
+                data={
+                    "current_count": current_count,
+                    "limit": 10,
+                    "window_seconds": 60,
+                }
             )
 
         # 如果传了模板，用模板渲染
@@ -1041,6 +1071,19 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         
         if not prompt:
             return error_response("请提供 prompt", code=400)
+
+        allowed, current_count = check_user_ai_rate_limit(request.user.id)
+
+        if not allowed:
+            return error_response(
+                "请求过于频繁，请稍后再试",
+                code=429,
+                data={
+                    "current_count": current_count,
+                    "limit": 10,
+                    "window_seconds": 60,
+                }
+            )
         
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
