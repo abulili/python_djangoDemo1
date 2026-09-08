@@ -1307,6 +1307,99 @@ class AICallThrottleTests(TestCase):
         self.assertEqual(response3.status_code, 429)
         self.assertEqual(mock_delay.call_count, 2)
 
+class AICallIdempotentTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+        self.user = User.objects.create_user(
+            username="idempotent_user",
+            password="123456"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    @patch("ai_log.views.call_ai_task4.delay")
+    def test_call_company_ai4_reuses_task_when_request_id_repeated(self, mock_delay):
+        class FakeTask:
+            id = "same-task-id-001"
+
+        mock_delay.return_value = FakeTask()
+
+        payload = {
+            "prompt": "测试幂等请求",
+            "model": "deepseek",
+            "conversation_id": "test-idempotent-conversation",
+            "request_id": "request-001",
+        }
+
+        response1 = self.client.post(
+            "/api/logs/call_company_ai4/",
+            payload,
+            format="json"
+        )
+
+        response2 = self.client.post(
+            "/api/logs/call_company_ai4/",
+            payload,
+            format="json"
+        )
+
+        self.assertEqual(response1.status_code, 200)
+        self.assertEqual(response2.status_code, 200)
+
+        self.assertEqual(response1.data["data"]["task_id"], "same-task-id-001")
+        self.assertEqual(response2.data["data"]["task_id"], "same-task-id-001")
+
+        self.assertFalse(response1.data["data"].get("idempotent", False))
+        self.assertTrue(response2.data["data"]["idempotent"])
+
+        self.assertEqual(mock_delay.call_count, 1)
+
+        step = AiTraceStepLog.objects.filter(
+            user=self.user,
+            conversation_id="test-idempotent-conversation",
+            step="idempotent_hit",
+        ).first()
+
+        self.assertIsNotNone(step)
+        self.assertEqual(step.detail["request_id"], "request-001")
+        self.assertEqual(step.detail["task_id"], "same-task-id-001")
+
+    # 不同 request_id 不应该复用任务。
+    @patch("ai_log.views.call_ai_task4.delay")
+    def test_call_company_ai4_creates_new_task_when_request_id_different(self, mock_delay):
+        class FakeTask1:
+            id = "task-id-001"
+
+        class FakeTask2:
+            id = "task-id-002"
+
+        mock_delay.side_effect = [FakeTask1(), FakeTask2()]
+
+        response1 = self.client.post("/api/logs/call_company_ai4/", {
+            "prompt": "第一次请求",
+            "model": "deepseek",
+            "conversation_id": "test-idempotent-conversation",
+            "request_id": "request-001",
+        }, format="json")
+
+        response2 = self.client.post("/api/logs/call_company_ai4/", {
+            "prompt": "第二次请求",
+            "model": "deepseek",
+            "conversation_id": "test-idempotent-conversation",
+            "request_id": "request-002",
+        }, format="json")
+
+        self.assertEqual(response1.status_code, 200)
+        self.assertEqual(response2.status_code, 200)
+
+        self.assertEqual(response1.data["data"]["task_id"], "task-id-001")
+        self.assertEqual(response2.data["data"]["task_id"], "task-id-002")
+
+        self.assertEqual(mock_delay.call_count, 2)
 
 
 

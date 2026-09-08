@@ -674,6 +674,8 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         conversation_id = request.data.get('conversation_id')
         template_name = request.data.get('template_name')
         template_vars = request.data.get('template_vars') or {}
+        request_id = request.data.get("request_id")
+
         # logger.info(f"用户 {request.user.username} 发起 AI 调用，prompt: {user_prompt[:50]}...")
         if not user_prompt:
             return Response(
@@ -693,6 +695,33 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                     "window_seconds": 60,
                 }
             )
+        
+        trace_id = getattr(request, "trace_id", "")
+
+        if request_id:
+            idempotent_key = f"ai_task_idempotent:{request.user.id}:{request_id}"
+            cached_task_id = cache.get(idempotent_key)
+
+            if cached_task_id:
+                AiTraceStepLog.objects.create(
+                    user=request.user,
+                    trace_id=trace_id,
+                    conversation_id=conversation_id or "",
+                    step="idempotent_hit",
+                    query=user_prompt,
+                    detail={
+                        "request_id": request_id,
+                        "task_id": cached_task_id,
+                    },
+                    success=True,
+                )
+
+                return success_response({
+                    "task_id": cached_task_id,
+                    "status": "processing",
+                    "idempotent": True,
+                    "message": "重复请求已复用原任务",
+                }, message="任务已存在")
 
         # 如果传了模板，用模板渲染
         if template_name:
@@ -703,7 +732,6 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
 
-        trace_id = getattr(request, "trace_id", "")
 
         AiTraceStepLog.objects.create(
             user=request.user,
@@ -721,6 +749,10 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         # 把任务丢给 Celery，不等待
         task = call_ai_task4.delay(user_prompt, request.user.id, model_key, conversation_id, template_name, template_vars, trace_id)
         
+        if request_id:
+            # 这里的 timeout=300 是 5 分钟。
+            cache.set(idempotent_key, task.id, timeout=300)
+
         # 返回任务ID和状态
         return success_response({
             'task_id': task.id,
