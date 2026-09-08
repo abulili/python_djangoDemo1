@@ -26,7 +26,7 @@ def get_coversation_history(conversation_id, user=None):
     # 从redis获取对话历史
     key = f"coversation:{conversation_id}"
     history = cache.get(key)
-    logger.debug('history', history)
+    logger.debug("history: %s", history)
     if history:
         return json.loads(history)
 

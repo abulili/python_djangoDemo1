@@ -238,7 +238,7 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
             'conversation_id': conversation_id,
         }
     except Exception as e:
-        logger.debug('call_ai_task2 error',str(e))
+        logger.debug("call_ai_task4 error: %s", str(e))
         logger.error(f"AI调用失败：{e}")
         # 存一条失败的日志
         user = User.objects.get(id=user_id)

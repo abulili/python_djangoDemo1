@@ -21,6 +21,13 @@ from unittest.mock import patch
 
 from ai_log.tasks import call_ai_task4
 
+from django.test import override_settings
+from unittest.mock import patch
+
+from django.core.cache import cache
+
+from ai_log.throttles import AICallThrottle
+
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
         # 测文档切片
@@ -1237,7 +1244,68 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(data["summary"]["rag_step_count"], 0)
         self.assertEqual(data["summary"]["step_count"], 4)
 
+# 测@throttle_classes([AICallThrottle])
+# 在当前测试类里临时把限流改成 2/minute
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "test-throttle-cache",
+        }
+    },
+    REST_FRAMEWORK={
+        "DEFAULT_THROTTLE_RATES": {
+            "ai_call": "2/minute",
+            "user": "100/minute",
+            "anon": "100/minute",
+        },
+    }
+)
+class AICallThrottleTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        # 强行把 AICallThrottle 的限流表改成 2/minute。
+        self.old_throttle_rates = AICallThrottle.THROTTLE_RATES
+        AICallThrottle.THROTTLE_RATES = {
+            "ai_call": "2/minute",
+            "user": "100/minute",
+            "anon": "100/minute",
+        }
 
+        self.user = User.objects.create_user(
+            username="throttle_user",
+            password="123456"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def tearDown(self):
+        AICallThrottle.THROTTLE_RATES = self.old_throttle_rates
+        cache.clear()
+
+    @patch("ai_log.views.call_ai_task4.delay")
+    def test_call_company_ai4_is_throttled(self, mock_delay):
+        mock_delay.return_value.id = "test-task-id"
+
+        response1 = self.client.post("/api/logs/call_company_ai4/", {
+            "prompt": "第一次请求",
+            "model": "deepseek",
+        }, format="json")
+
+        response2 = self.client.post("/api/logs/call_company_ai4/", {
+            "prompt": "第二次请求",
+            "model": "deepseek",
+        }, format="json")
+
+        response3 = self.client.post("/api/logs/call_company_ai4/", {
+            "prompt": "第三次请求",
+            "model": "deepseek",
+        }, format="json")
+
+        self.assertEqual(response1.status_code, 200)
+        self.assertEqual(response2.status_code, 200)
+        self.assertEqual(response3.status_code, 429)
+        self.assertEqual(mock_delay.call_count, 2)
 
 
 

@@ -641,8 +641,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 return "AI 服务暂时不可用，请稍后重试", False
     
     # 引入模型选择
-    @throttle_classes([AICallThrottle])
-    @action(detail=False, methods=['post'],url_path='call_company_ai3')
+    @action(detail=False, methods=['post'],url_path='call_company_ai3',throttle_classes=[AICallThrottle])
     def create2(self, request):
         logger.debug(">>>> create 被调用了！")
         user_prompt = request.data.get('prompt')
@@ -666,9 +665,8 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         }, message="任务已提交")
     
      # 引入模型选择
-    
-    @throttle_classes([AICallThrottle])
-    @action(detail=False, methods=['post'],url_path='call_company_ai4')
+     # 自定义 action 最稳的配置方式就是写在action里面
+    @action(detail=False, methods=['post'],url_path='call_company_ai4',throttle_classes=[AICallThrottle])
     def create4(self, request):
         logger.debug(">>>> create 被调用了！")
         user_prompt = request.data.get('prompt')
@@ -779,8 +777,8 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         return obj
 
 
-    @throttle_classes([AICallThrottle])
-    @action(detail=False, methods=['post'],url_path='stream')
+   
+    @action(detail=False, methods=['post'],url_path='stream',throttle_classes=[AICallThrottle])
     def stream_chat(self, request):
         prompt = request.data.get('prompt')
         if not prompt:
@@ -832,8 +830,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             yield f"data:{json.dumps({'error':str(e)})}\n\n"
 
 
-    @throttle_classes([AICallThrottle])
-    @action(detail=False, methods=['post'],url_path='stream2')
+    @action(detail=False, methods=['post'],url_path='stream2', throttle_classes=[AICallThrottle])
     def stream_chat2(self, request):
         """流式对话接口
         因为流式返回，所以不能用DRF的Response，要使用StreamingHttpResponse
@@ -1056,8 +1053,8 @@ class AICallLogViewSet(viewsets.ModelViewSet):
 
             yield f"data:{json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
     
-    @throttle_classes([AICallThrottle])
-    @action(detail=False, methods=['post'], url_path='stream3')
+    
+    @action(detail=False, methods=['post'], url_path='stream3', throttle_classes=[AICallThrottle])
     def stream_chat3(self, request):
         """
         支持 conversation_id 和上下文历史的流式对话
