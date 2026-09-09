@@ -122,6 +122,7 @@ REST_FRAMEWORK = {
         "user": "20/minute",
         "anon": "10/minute",
         "ai_call": "20/minute",
+        "task_status": "120/minute",
     },
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,

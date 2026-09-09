@@ -4,3 +4,6 @@ class AICallThrottle(UserRateThrottle):
     # 只针对 create 和 stream 接口
     # rate = '20/minute' # 每分钟最多2次
     scope = "ai_call"
+
+class TaskStatusThrottle(UserRateThrottle):
+    scope = "task_status"

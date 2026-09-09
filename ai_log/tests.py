@@ -26,7 +26,7 @@ from unittest.mock import patch
 
 from django.core.cache import cache
 
-from ai_log.throttles import AICallThrottle
+from ai_log.throttles import AICallThrottle, TaskStatusThrottle
 
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
@@ -1582,5 +1582,276 @@ class AICallIdempotentTests(TestCase):
 
         self.assertEqual(mock_call_ai_service.call_count, 2)
 
-    
+@override_settings(
+    CACHES={
+        "default":{
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "test-task-status-throttle-cache",
+        }
+    },
+    REST_FRAMEWORK={
+        "DEFAULT_THROTTLE_RATES": {
+            "task_status": "2/minute",
+            "ai_call": "100/minute",
+            "user": "100/minute",
+            "anon": "100/minute",
+        },
+    }
+)
 
+class TaskStatusThrottleTestCase(TestCase):
+    def setUp(self):
+        cache.clear()
+        # THROTTLE_RATES继承自DRF
+        self.old_throttle_rates = TaskStatusThrottle.THROTTLE_RATES
+        TaskStatusThrottle.THROTTLE_RATES = {
+            "task_status": "2/minute",
+            "ai_call": "100/minute",
+            "user": "100/minute",
+            "anon": "100/minute", 
+        }
+
+        self.user = User.objects.create_user(
+            username="task_status_user",
+            password="123456"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    # 重写方法 setup -> 测试1 -> tearDown  setup -> 测试2 -> tearDown
+    # 每一个 test 方法执行前都会跑一次 setUp，执行后都会跑一次 tearDown。
+    def tearDown(self):
+        # 将当前测试类跑完后把限流配置恢复原来的样子
+        # 旧配置
+        TaskStatusThrottle.THROTTLE_RATES = self.old_throttle_rates
+        cache.clear()
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_is_throttled(self, mock_async_result):
+        # 让这个假任务一直处于排队中
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        cache.set("ai_task_owner:test-task-id", {
+            "user_id": self.user.id,
+            "conversation_id": "conversation-throttle",
+            "trace_id": "trace-throttle",
+        }, timeout=3600)
+
+        response1 = self.client.get("/api/logs/task/test-task-id/")
+        response2 = self.client.get("/api/logs/task/test-task-id/")
+        response3 = self.client.get("/api/logs/task/test-task-id/")
+
+        self.assertEqual(response1.status_code, 200)
+        self.assertEqual(response2.status_code, 200)
+        self.assertEqual(response3.status_code, 429)
+
+        self.assertEqual(mock_async_result.call_count, 2)
+
+class TaskStatusResultTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="task_result_user",
+            password="123456"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_pending(self, mock_async_result):
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        cache.set("ai_task_owner:task-pending-id", {
+            "user_id": self.user.id,
+            "conversation_id": "conversation-pending",
+            "trace_id": "trace-pending",
+        }, timeout=3600)
+
+        response = self.client.get("/api/logs/task/task-pending-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["status"], "processing")
+        self.assertEqual(response.data["data"]["status_text"], "排队中")
+        self.assertEqual(response.data["data"]["result"], None)
+        self.assertEqual(response.data["data"]["error"], "")
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_success_with_result(self, mock_async_result):
+        mock_task = mock_async_result.return_value
+        mock_task.state = "SUCCESS"
+        mock_task.result = {
+            "status": "success",
+            "response": "AI 回答内容",
+            "conversation_id": "task-conversation-001",
+            "trace_id": "task-trace-001",
+            "total_tokens": 20,
+            "cost": 0.002,
+        }
+
+        cache.set("ai_task_owner:task-success-id", {
+            "user_id": self.user.id,
+            "conversation_id": "task-conversation-001",
+            "trace_id": "task-trace-001",
+        }, timeout=3600)
+
+        response = self.client.get("/api/logs/task/task-success-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["status"], "success")
+        self.assertEqual(response.data["data"]["status_text"], "处理成功")
+        self.assertEqual(response.data["data"]["trace_id"], "task-trace-001")
+        self.assertEqual(response.data["data"]["result"]["response"], "AI 回答内容")
+        self.assertEqual(response.data["data"]["result"]["conversation_id"], "task-conversation-001")
+        self.assertEqual(response.data["data"]["result"]["total_tokens"], 20)
+        self.assertEqual(response.data["data"]["result"]["cost"], 0.002)
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_success_with_error_result(self, mock_async_result):
+        mock_task = mock_async_result.return_value
+        mock_task.state = "SUCCESS"
+        mock_task.result = {
+            "status": "error",
+            "message": "AI 调用失败",
+            "trace_id": "task-trace-error",
+        }
+
+        cache.set("ai_task_owner:task-error-id", {
+            "user_id": self.user.id,
+            "conversation_id": "conversation-error",
+            "trace_id": "task-trace-error",
+        }, timeout=3600)
+
+        response = self.client.get("/api/logs/task/task-error-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["status"], "failed")
+        self.assertEqual(response.data["data"]["status_text"], "处理失败")
+        self.assertEqual(response.data["data"]["trace_id"], "task-trace-error")
+        self.assertEqual(response.data["data"]["error"], "AI 调用失败")
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_failure(self, mock_async_result):
+        mock_task = mock_async_result.return_value
+        mock_task.state = "FAILURE"
+        mock_task.result = Exception("Celery 任务异常")
+
+        cache.set("ai_task_owner:task-failure-id", {
+            "user_id": self.user.id,
+            "conversation_id": "conversation-failure",
+            "trace_id": "trace-failure",
+        }, timeout=3600)
+
+        response = self.client.get("/api/logs/task/task-failure-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["status"], "failed")
+        self.assertEqual(response.data["data"]["status_text"], "任务异常")
+        self.assertIn("Celery 任务异常", response.data["data"]["error"])
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_unknown(self, mock_async_result):
+        mock_task = mock_async_result.return_value
+        mock_task.state = "SOME_UNKNOWN_STATUS"
+        mock_task.result = None
+
+        cache.set("ai_task_owner:task-unknown-id", {
+            "user_id": self.user.id,
+            "conversation_id": "conversation-unknown",
+            "trace_id": "trace-unknown",
+        }, timeout=3600)
+
+        response = self.client.get("/api/logs/task/task-unknown-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["status"], "unknown")
+        self.assertEqual(response.data["data"]["status_text"], "未知状态")
+        self.assertEqual(response.data["data"]["result"], None) 
+
+class TaskStatusPermissionTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+        self.user = User.objects.create_user(
+            username="task_owner_user",
+            password="123456"
+        )
+        self.other_user = User.objects.create_user(
+            username="task_other_user",
+            password="123456"
+        )
+        self.admin_user = User.objects.create_superuser(
+            username="task_admin_user",
+            password="123456",
+            email="admin@example.com"
+        )
+
+        self.client = APIClient()
+
+    def tearDown(self):
+        cache.clear()
+
+    @patch("ai_log.views.AsyncResult")
+    def test_user_can_query_own_task(self, mock_async_result):
+        cache.set("ai_task_owner:task-own-001", {
+            "user_id": self.user.id,
+            "conversation_id": "conversation-own-001",
+            "trace_id": "trace-own-001",
+        }, timeout=3600)
+
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get("/api/logs/task/task-own-001/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["task_id"], "task-own-001")
+        mock_async_result.assert_called_once_with("task-own-001")
+
+    @patch("ai_log.views.AsyncResult")
+    def test_user_cannot_query_other_users_task(self, mock_async_result):
+        cache.set("ai_task_owner:task-other-001", {
+            "user_id": self.other_user.id,
+            "conversation_id": "conversation-other-001",
+            "trace_id": "trace-other-001",
+        }, timeout=3600)
+
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get("/api/logs/task/task-other-001/")
+
+        self.assertEqual(response.status_code, 404)
+        mock_async_result.assert_not_called()
+
+    @patch("ai_log.views.AsyncResult")
+    def test_admin_can_query_any_task(self, mock_async_result):
+        cache.set("ai_task_owner:task-admin-001", {
+            "user_id": self.other_user.id,
+            "conversation_id": "conversation-admin-001",
+            "trace_id": "trace-admin-001",
+        }, timeout=3600)
+
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        self.client.force_authenticate(user=self.admin_user)
+
+        response = self.client.get("/api/logs/task/task-admin-001/")
+
+        self.assertEqual(response.status_code, 200)
+        mock_async_result.assert_called_once_with("task-admin-001")
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_returns_404_when_owner_cache_missing(self, mock_async_result):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get("/api/logs/task/missing-task-id/")
+
+        self.assertEqual(response.status_code, 404)
+        mock_async_result.assert_not_called()

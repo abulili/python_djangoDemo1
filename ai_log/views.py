@@ -40,8 +40,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 
 from rest_framework.decorators import throttle_classes
-from .throttles import AICallThrottle
-
+from .throttles import AICallThrottle, TaskStatusThrottle
 from django.core.cache import cache
 
 from .tasks import call_ai_task,call_ai_task2, call_ai_task4
@@ -786,6 +785,13 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         # 把任务丢给 Celery，不等待
         task = call_ai_task4.delay(user_prompt, request.user.id, model_key, conversation_id, template_name, template_vars, trace_id)
         
+        task_owner_key = f"ai_task_owner: {task.id}"
+        cache.set(task_owner_key, {
+            "user_id": request.user.id,
+            "conversation_id": conversation_id,
+            "trace_id": trace_id,
+        }, timeout=3600)
+
         if request_id:
             # 这里的 timeout=300 是 5 分钟。
             cache.set(idempotent_key, task.id, timeout=300)
@@ -1195,40 +1201,66 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     Celery 的 task_id 是 UUID（比如 550e8400-e29b-41d4-a716-446655440000），它包含 -，所以不能用 \w+（只匹配字母数字下划线），也不能用 [a-zA-Z0-9]+（不匹配 -）。
     用 [^/.]+ 是“安全”的，因为它只排除了 / 和 .，其他字符都可以（包括 -、_、数字、字母）
     """
-    @action(detail=False, methods=['get'],url_path='task/(?P<task_id>[^/.]+)')
+    @action(detail=False, methods=['get'],url_path='task/(?P<task_id>[^/.]+)', throttle_classes=[TaskStatusThrottle],)
     def get_task_result(self, request, task_id=None):
+        task_owner_key = f"ai_task_owner:{task_id}"
+        task_owner = cache.get(task_owner_key)
+
+        if not task_owner:
+            return error_response("任务不存在或已过期", code=404)
+        if task_owner.get("user_id") != request.user.id and not request.user.is_superuser:
+            return error_response("您没有权限查看该任务的结果", code=404)
+
         task = AsyncResult(task_id)
         # 用 state 判断任务状态
-        state = task.state
+        status_key = task.state
 
-        logger.debug('state',state)
+        logger.debug("task state: %s", status_key)
 
-        if state == 'PENDING':
-            return success_response({
-                'task_id':task_id,
-                'status': 'pending',
-                'message':'任务正在排队中'
-            })
-        elif state == 'FAILED':
-            return success_response({
-                'task_id':task_id,
-                'status': 'failed',
-                'message': str(task.info)
-            })
-        elif state == 'SUCCESS':
-            result=task.result
-            return success_response({
-                'task_id':task_id,
-                'status': 'success',
-                'message':result
-            })
-        else:
-            return success_response({
-                'task_id':task_id,
-                'status': 'unknown',
-                'message':'未知状态'
-            })
+        # 之所以不让前端来做是未来多端复用
+        state_map = {
+            "PENDING": ("processing", "排队中"),
+            "STARTED": ("processing", "处理中"),
+            "RETRY": ("processing", "重试中"),
+            "SUCCESS": ("success", "处理成功"),
+            "FAILURE": ("failed", "处理失败"),
+        }
+        status_value, status_text = state_map.get(status_key, ("unknown", "未知状态"))
+        print('get_task_result', status_key, status_value, status_text)
 
+        data = {
+            "task_id": task_id,
+            "celery_status": status_key,
+            "status": status_value,
+            "status_text": status_text,
+            "trace_id": "",
+            "result": None,
+            "error": "",
+        }
+        
+        if status_key == 'SUCCESS':
+            result = task.result or {}
+            if result.get("status") == "success":
+                data["status"] = "success"
+                data["status_text"] = "处理成功"
+                data["trace_id"] = result.get("trace_id", "")
+                data["result"] = {
+                    "response": result.get("response", ""),
+                    "conversation_id": result.get("conversation_id", ""),
+                    "total_tokens": result.get("total_tokens", 0),
+                    "cost": result.get("cost", 0.0),
+                }
+            else:
+                data["status"] = "failed"
+                data["status_text"] = "处理失败"
+                data["trace_id"] = result.get("trace_id", "")
+                data["error"] = result.get("message", "AI调用失败")
+        elif status_key == "FAILURE":
+            data["status"] = "failed"
+            data["status_text"] = "任务异常"
+            data["error"] = str(task.result)
+
+        return success_response(data)
 
 
     # ========== 标准 CRUD 接口（ModelViewSet 自动生成） ==========
