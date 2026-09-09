@@ -785,7 +785,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         # 把任务丢给 Celery，不等待
         task = call_ai_task4.delay(user_prompt, request.user.id, model_key, conversation_id, template_name, template_vars, trace_id)
         
-        task_owner_key = f"ai_task_owner: {task.id}"
+        task_owner_key = f"ai_task_owner:{task.id}"
         cache.set(task_owner_key, {
             "user_id": request.user.id,
             "conversation_id": conversation_id,
