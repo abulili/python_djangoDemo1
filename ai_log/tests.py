@@ -1401,6 +1401,186 @@ class AICallIdempotentTests(TestCase):
 
         self.assertEqual(mock_delay.call_count, 2)
 
+    @patch("ai_log.views.call_ai_service")
+    def test_rag_ask_reuses_result_when_request_id_repeated(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "stream3 通过 conversation_id、Redis 和 DB 实现上下文会话",
+            "prompt_tokens": 10,
+            "completion_tokens": 8,
+            "total_tokens": 18,
+            "cost": 0.001,
+            "duration": 0.2,
+        }, True)
 
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="AI日志项目说明",
+            content="stream3 使用 conversation_id 实现上下文会话"
+        )
 
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id 实现上下文会话",
+            chunk_index=0
+        )
+
+        payload = {
+            "query": "stream3 是怎么实现上下文会话的？",
+            "top_k": 3,
+            "model": "deepseek",
+            "conversation_id": "test-rag-idempotent-conversation",
+            "request_id": "rag-request-001",
+        }
+
+        response1 = self.client.post(
+            "/api/knowledge-documents/ask/",
+            payload,
+            format="json"
+        )
+
+        response2 = self.client.post(
+            "/api/knowledge-documents/ask/",
+            payload,
+            format="json"
+        )
+
+        self.assertEqual(response1.status_code, 200)
+        self.assertEqual(response2.status_code, 200)
+
+        self.assertFalse(response1.data["data"]["idempotent"])
+        self.assertTrue(response2.data["data"]["idempotent"])
+
+        self.assertEqual(response1.data["data"]["answer"], response2.data["data"]["answer"])
+        self.assertEqual(response1.data["data"]["conversation_id"], response2.data["data"]["conversation_id"])
+
+        mock_call_ai_service.assert_called_once()
+
+        hit_step = AiTraceStepLog.objects.filter(
+            user=self.user,
+            conversation_id="test-rag-idempotent-conversation",
+            step="idempotent_hit",
+        ).first()
+
+        self.assertIsNotNone(hit_step)
+        self.assertEqual(hit_step.detail["request_id"], "rag-request-001")
+        self.assertEqual(hit_step.detail["type"], "rag_ask")
+
+    @patch("ai_log.views.call_ai_service")
+    def test_rag_ask_creates_new_result_when_request_id_different(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = [
+            ({
+                "reply": "第一次 RAG 回答",
+                "prompt_tokens": 10,
+                "completion_tokens": 8,
+                "total_tokens": 18,
+                "cost": 0.001,
+                "duration": 0.2,
+            }, True),
+            ({
+                "reply": "第二次 RAG 回答",
+                "prompt_tokens": 11,
+                "completion_tokens": 9,
+                "total_tokens": 20,
+                "cost": 0.002,
+                "duration": 0.3,
+            }, True),
+        ]
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="AI日志项目说明",
+            content="stream3 使用 conversation_id 实现上下文会话"
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id 实现上下文会话",
+            chunk_index=0
+        )
+
+        response1 = self.client.post("/api/knowledge-documents/ask/", {
+            "query": "stream3 是怎么实现上下文会话的？",
+            "top_k": 3,
+            "model": "deepseek",
+            "conversation_id": "test-rag-idempotent-conversation",
+            "request_id": "rag-request-001",
+        }, format="json")
+
+        response2 = self.client.post("/api/knowledge-documents/ask/", {
+            "query": "stream3 是怎么实现上下文会话的？",
+            "top_k": 3,
+            "model": "deepseek",
+            "conversation_id": "test-rag-idempotent-conversation",
+            "request_id": "rag-request-002",
+        }, format="json")
+
+        self.assertEqual(response1.status_code, 200)
+        self.assertEqual(response2.status_code, 200)
+
+        self.assertEqual(response1.data["data"]["answer"], "第一次 RAG 回答")
+        self.assertEqual(response2.data["data"]["answer"], "第二次 RAG 回答")
+
+        self.assertFalse(response1.data["data"]["idempotent"])
+        self.assertFalse(response2.data["data"]["idempotent"])
+
+        self.assertEqual(mock_call_ai_service.call_count, 2)
+
+    @patch("ai_log.views.call_ai_service")
+    def test_rag_ask_does_not_cache_failed_result(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = [
+            ({
+                "reply": "AI调用失败",
+                "duration": 0.1,
+            }, False),
+            ({
+                "reply": "第二次调用成功",
+                "prompt_tokens": 5,
+                "completion_tokens": 5,
+                "total_tokens": 10,
+                "cost": 0.001,
+                "duration": 0.2,
+            }, True),
+        ]
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="AI日志项目说明",
+            content="stream3 使用 conversation_id 实现上下文会话"
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="stream3 使用 conversation_id 实现上下文会话",
+            chunk_index=0
+        )
+
+        payload = {
+            "query": "stream3 是怎么实现上下文会话的？",
+            "top_k": 3,
+            "model": "deepseek",
+            "conversation_id": "test-rag-failed-not-cache",
+            "request_id": "rag-request-failed-001",
+        }
+
+        response1 = self.client.post(
+            "/api/knowledge-documents/ask/",
+            payload,
+            format="json"
+        )
+
+        response2 = self.client.post(
+            "/api/knowledge-documents/ask/",
+            payload,
+            format="json"
+        )
+
+        self.assertEqual(response1.status_code, 500)
+        self.assertEqual(response2.status_code, 200)
+
+        self.assertEqual(response2.data["data"]["answer"], "第二次调用成功")
+        self.assertFalse(response2.data["data"]["idempotent"])
+
+        self.assertEqual(mock_call_ai_service.call_count, 2)
+
+    
 

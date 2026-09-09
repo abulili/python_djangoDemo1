@@ -338,8 +338,8 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "scored_chunks": scored_chunks[:top_k],
         })
 
-    @throttle_classes([AICallThrottle])
-    @action(detail=False, methods=['post'], url_path='ask')
+    
+    @action(detail=False, methods=['post'], url_path='ask',throttle_classes=[AICallThrottle],)
     def ask(self, request):
         query = request.data.get('query', '')
 
@@ -347,9 +347,37 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         model_key = request.data.get('model', getattr(settings, 'DEFAULT_AI_MODEL', 'deepseek'))
         conversation_id = request.data.get('conversation_id')
         trace_id = getattr(request, "trace_id", "")
+        request_id = request.data.get("request_id")
 
         if not query.strip():
             return error_response('请提供query', code=400)
+
+        if request_id:
+            idempotent_key = f"rag_ask_idempotent:{request.user.id}:{request_id}"
+            cached_result = cache.get(idempotent_key)
+
+            if cached_result:
+                AiTraceStepLog.objects.create(
+                    user=request.user,
+                    trace_id=trace_id,
+                    conversation_id=cached_result.get("conversation_id", conversation_id or ""),
+                    step="idempotent_hit",
+                    query=query,
+                    detail={
+                        "request_id": request_id,
+                        "type": "rag_ask",
+                        "answer_length": len(cached_result.get("answer", "")),
+                        "references_count": len(cached_result.get("references", [])),
+                    },
+                    success=True,
+                )
+
+                response_data = {
+                    # 复制一份
+                    **cached_result,
+                    "idempotent": True,
+                }
+                return success_response(response_data, message="重复请求已复用原结果")
 
         allowed, current_count = check_user_ai_rate_limit(request.user.id)
 
@@ -428,12 +456,18 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
                 }
             )
 
-            return success_response({
+            response_data = {
                 "query": query,
                 "answer": answer,
                 "references": [],
                 "conversation_id": conversation_id,
-            })
+                "idempotent": False,
+            }
+
+            if request_id:
+                cache.set(idempotent_key, response_data, timeout=300)
+
+            return success_response(response_data)
 
         context = "\n\n".join([
             f"资料{index + 1}：{item['content']}"
@@ -549,13 +583,16 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
                 "cost": result.get("cost", 0.0),
             },
         )
-
-        return success_response({
+        response_data = {
             "query": query,
             "answer": result.get("reply", ""),
             "references": top_chunks,
             "conversation_id": conversation_id,
-        })
+            "idempotent": False,
+        }
+        if request_id:
+            cache.set(idempotent_key, response_data, timeout=300)
+        return success_response(response_data)
 
 class AICallLogViewSet(viewsets.ModelViewSet):
     """
