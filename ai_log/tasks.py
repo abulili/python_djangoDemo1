@@ -146,14 +146,68 @@ def call_ai_task2(prompt, user_id, model_key=None,trace_id=""):
             'error': str(e),
         }
 
-@shared_task
-def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, template_name=None, template_vars=None,trace_id=""):
+def is_retryable_ai_error(error_message):
+    retry_keywords = [
+        "timeout",
+        "timed out",
+        "超时",
+        "connection",
+        "连接",
+        "temporarily",
+        "临时",
+        "rate limit",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+    ]
+
+    non_retry_keywords = [
+        "invalid api key",
+        "unauthorized",
+        "401",
+        "forbidden",
+        "403",
+        "余额不足",
+        "insufficient balance",
+        "model not found",
+        "invalid model",
+        "参数错误",
+        "bad request",
+        "400",
+    ]
+
+    lower_message = error_message.lower()
+
+    if any(keyword in lower_message for keyword in non_retry_keywords):
+        return False
+
+    return any(keyword in lower_message for keyword in retry_keywords)
+
+def get_ai_retry_countdown(error_message):
+    lower_message = error_message.lower()
+
+    if "429" in lower_message or "rate limit" in lower_message:
+        return 10
+
+    if "503" in lower_message or "temporarily" in lower_message or "临时" in lower_message:
+        return 5
+
+    return 2
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=2) # self--Celery task 对象
+def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, template_name=None, template_vars=None,trace_id=""):
     """
     异步调用AI模型，存结果到数据库。
+    bind=True:让任务函数能拿到当前 task 对象。
+    self.request.retries:当前已经重试了几次。
+    self.max_retries:最多允许重试几次。
     """
     
     logger.info(f"开始处理AI调用，会话ID：{conversation_id}用户ID： {user_id}, prompt: {prompt[:50]}...")
     user = User.objects.get(id=user_id)
+    start_time = time.time()
 
     AiTraceStepLog.objects.create(
         user=user,
@@ -178,10 +232,6 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
             "stream": False,
         },
     )
-
-    
-    
-    
 
     try:
         result, success = call_ai_service(
@@ -236,37 +286,72 @@ def call_ai_task4(prompt, user_id, model_key=None, conversation_id=None, templat
             'tokens': result.get('total_tokens',0),
             'cost': result.get('cost', 0.0),
             'conversation_id': conversation_id,
+            "trace_id": trace_id,
+            "total_tokens": result.get("total_tokens", 0),
         }
     except Exception as e:
-        logger.debug("call_ai_task4 error: %s", str(e))
-        logger.error(f"AI调用失败：{e}")
-        # 存一条失败的日志
-        user = User.objects.get(id=user_id)
-        AICallLog.objects.create(
-            prompt=prompt,
-            response=f"AI调用失败：{str(e)}",
-            duration=0.0,
-            success=False,
-            user=user,
-            model_name=model_key or 'deepseek',
-            conversation_id=conversation_id,
-            trace_id=trace_id,
-        )
+        error_message = str(e)
+        duration = time.time() - start_time
+        retryable = is_retryable_ai_error(error_message)
+        countdown = get_ai_retry_countdown(error_message)
+
+
+        if retryable and self.request.retries < self.max_retries:
+            AiTraceStepLog.objects.create(
+                user=user,
+                trace_id=trace_id,
+                conversation_id=conversation_id or "",
+                step="task_retry",
+                query=prompt,
+                success=False,
+                error_message=error_message,
+                duration=duration,
+                detail={
+                    "retry_count": self.request.retries + 1,
+                    "max_retries": self.max_retries,
+                    "retryable": retryable,
+                    "countdown": countdown,
+                },
+            )
+
+            raise self.retry(exc=e, countdown=countdown)
+
         AiTraceStepLog.objects.create(
-            user=user if "user" in locals() else None,
+            user=user,
             trace_id=trace_id,
-            conversation_id=conversation_id,
+            conversation_id=conversation_id or "",
             step="task_failed",
             query=prompt,
-            duration=0.0,
             success=False,
-            error_message=str(e),
+            error_message=error_message,
+            duration=duration,
             detail={
-                "model": model_key,
+                "reason": "max_retries_exceeded" if retryable else "non_retryable_error",
+                "retry_count": self.request.retries,
+                "max_retries": self.max_retries,
+                "retryable": retryable,
+                "countdown": countdown,
             },
         )
 
+        AICallLog.objects.create(
+            conversation_id=conversation_id or "",
+            prompt=prompt,
+            response=error_message,
+            duration=duration,
+            success=False,
+            user=user,
+            model_name=model_key or "deepseek",
+            trace_id=trace_id,
+        )
+
+        logger.exception("call_ai_task4 调用失败")
+
         return {
-            'status': 'error',
-            'error': str(e),
+            "status": "error",
+            "message": error_message,
+            "trace_id": trace_id,
+            "conversation_id": conversation_id,
         }
+        
+

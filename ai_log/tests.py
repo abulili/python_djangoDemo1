@@ -19,7 +19,7 @@ from .services import calculate_cost
 
 from unittest.mock import patch
 
-from ai_log.tasks import call_ai_task4
+from ai_log.tasks import call_ai_task4, get_ai_retry_countdown
 
 from django.test import override_settings
 from unittest.mock import patch
@@ -27,6 +27,8 @@ from unittest.mock import patch
 from django.core.cache import cache
 
 from ai_log.throttles import AICallThrottle, TaskStatusThrottle
+
+from celery.exceptions import Retry
 
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
@@ -1086,44 +1088,38 @@ class AiTraceStepLogApiTests(TestCase):
 
     @patch("ai_log.tasks.call_ai_service")
     def test_call_ai_task4_creates_trace_steps_when_service_raises_exception(self, mock_call_ai_service):
-        trace_id = "test-task4-trace-exception"
-        conversation_id = "test-task4-conversation-exception"
-
         mock_call_ai_service.side_effect = Exception("模型接口超时")
 
-        result = call_ai_task4(
-            "非流式异常测试",
-            self.user.id,
-            "deepseek",
-            conversation_id,
-            None,
-            None,
-            trace_id,
-        )
+        with self.assertRaises(Retry):
+            call_ai_task4.apply(
+                args=[
+                    "非流式异常测试",
+                    self.user.id,
+                    "deepseek",
+                    "test-task4-conversation-exception",
+                    None,
+                    {},
+                    "test-task4-trace-exception",
+                ],
+                throw=True,
+            )
 
-        self.assertEqual(result["status"], "error")
-        self.assertEqual(result["error"], "模型接口超时")
+        retry_step = AiTraceStepLog.objects.filter(
+            user=self.user,
+            trace_id="test-task4-trace-exception",
+            step="task_retry",
+        ).first()
 
-        log = AICallLog.objects.filter(trace_id=trace_id).first()
-        self.assertIsNotNone(log)
-        self.assertFalse(log.success)
-        self.assertEqual(log.response, "AI调用失败：模型接口超时")
+        self.assertIsNotNone(retry_step)
+        self.assertFalse(retry_step.success)
+        self.assertEqual(retry_step.error_message, "模型接口超时")
 
-        steps = AiTraceStepLog.objects.filter(trace_id=trace_id).order_by("created_at")
-        step_names = [item.step for item in steps]
+        failed_log = AICallLog.objects.filter(
+            user=self.user,
+            trace_id="test-task4-trace-exception",
+        ).first()
 
-        self.assertEqual(step_names, [
-            "task_start",
-            "call_model_start",
-            "task_failed",
-        ])
-
-        failed_step = steps.filter(step="task_failed").first()
-        self.assertIsNotNone(failed_step)
-        self.assertFalse(failed_step.success)
-        self.assertEqual(failed_step.error_message, "模型接口超时")
-
-        mock_call_ai_service.assert_called_once()
+        self.assertIsNone(failed_log)
 
     @patch("ai_log.views.call_ai_task4.delay")
     def test_call_company_ai4_creates_enqueue_trace_step(self, mock_delay):
@@ -1243,6 +1239,261 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(data["summary"]["stream_step_count"], 0)
         self.assertEqual(data["summary"]["rag_step_count"], 0)
         self.assertEqual(data["summary"]["step_count"], 4)
+
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_retries_when_service_raises_exception(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = Exception("模型接口超时")
+
+        with self.assertRaises(Retry):
+            call_ai_task4.apply(
+                args=[
+                    "重试测试问题",
+                    self.user.id,
+                    "deepseek",
+                    "test-retry-conversation",
+                    None,
+                    {},
+                    "test-retry-trace",
+                ],
+                throw=True,
+            )
+
+        retry_step = AiTraceStepLog.objects.filter(
+            user=self.user,
+            trace_id="test-retry-trace",
+            step="task_retry",
+        ).first()
+
+        self.assertIsNotNone(retry_step)
+        self.assertFalse(retry_step.success)
+        self.assertEqual(retry_step.error_message, "模型接口超时")
+        self.assertEqual(retry_step.detail["retry_count"], 1)
+        self.assertEqual(retry_step.detail["max_retries"], 3)
+
+        failed_log = AICallLog.objects.filter(
+            user=self.user,
+            trace_id="test-retry-trace",
+        ).first()
+
+        self.assertIsNone(failed_log)
+
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_creates_failed_log_when_max_retries_exceeded(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = Exception("模型接口连续超时")
+
+        result = call_ai_task4.apply(
+            args=[
+                "最大重试失败测试",
+                self.user.id,
+                "deepseek",
+                "test-max-retry-conversation",
+                None,
+                {},
+                "test-max-retry-trace",
+            ],
+            retries=3,
+            throw=False,
+        ).result
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "模型接口连续超时")
+        self.assertEqual(result["trace_id"], "test-max-retry-trace")
+
+        failed_step = AiTraceStepLog.objects.filter(
+            user=self.user,
+            trace_id="test-max-retry-trace",
+            step="task_failed",
+        ).first()
+
+        self.assertIsNotNone(failed_step)
+        self.assertFalse(failed_step.success)
+        self.assertEqual(failed_step.error_message, "模型接口连续超时")
+        self.assertEqual(failed_step.detail["reason"], "max_retries_exceeded")
+
+        failed_log = AICallLog.objects.filter(
+            user=self.user,
+            trace_id="test-max-retry-trace",
+            success=False,
+        ).first()
+
+        self.assertIsNotNone(failed_log)
+        self.assertEqual(failed_log.response, "模型接口连续超时")
+
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_succeeds_after_retries(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = [
+            Exception("第一次超时"),# 第一次抛异常超时
+            Exception("第二次超时"),
+            ({
+                "reply": "第三次成功回答",
+                "duration": 0.3,
+                "prompt_tokens": 10,
+                "completion_tokens": 8,
+                "total_tokens": 18,
+                "cost": 0.001,
+            }, True),
+        ]
+
+        # 用三次同步执行模拟 Celery 的三次尝试
+        # with 的意思是：进入一个上下文环境。
+        # 里面这段代码必须抛出 Retry 异常，测试才算通过。
+        # 我预期接下来这段代码会报 Retry。如果真的报 Retry，就通过。如果没报 Retry，就失败
+        with self.assertRaises(Retry):
+            # 这个apply表示同步指定celery任务，现在就执行这个task
+            call_ai_task4.apply(
+                args=[
+                    "重试后成功测试",
+                    self.user.id,
+                    "deepseek",
+                    "test-retry-success-conversation",
+                    None,
+                    {},
+                    "test-retry-success-trace",
+                ],
+                retries=0,
+                throw=True,
+            )
+
+        with self.assertRaises(Retry):
+            call_ai_task4.apply(
+                args=[
+                    "重试后成功测试",
+                    self.user.id,
+                    "deepseek",
+                    "test-retry-success-conversation",
+                    None,
+                    {},
+                    "test-retry-success-trace",
+                ],
+                retries=1,
+                throw=True,
+            )
+
+        result = call_ai_task4.apply(
+            args=[
+                "重试后成功测试",
+                self.user.id,
+                "deepseek",
+                "test-retry-success-conversation",
+                None,
+                {},
+                "test-retry-success-trace",
+            ],
+            retries=2,
+            throw=False,
+        ).result
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["response"], "第三次成功回答")
+        self.assertEqual(result["trace_id"], "test-retry-success-trace")
+
+        retry_steps = AiTraceStepLog.objects.filter(
+            user=self.user,
+            trace_id="test-retry-success-trace",
+            step="task_retry",
+        )
+
+        self.assertEqual(retry_steps.count(), 2)
+
+        done_step = AiTraceStepLog.objects.filter(
+            user=self.user,
+            trace_id="test-retry-success-trace",
+            step="task_done",
+        ).first()
+
+        self.assertIsNotNone(done_step)
+        self.assertTrue(done_step.success)
+
+        log = AICallLog.objects.filter(
+            user=self.user,
+            trace_id="test-retry-success-trace",
+            success=True,
+        ).first()
+
+        self.assertIsNotNone(log)
+        self.assertEqual(log.response, "第三次成功回答")
+
+        self.assertEqual(mock_call_ai_service.call_count, 3)
+
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_does_not_retry_non_retryable_error(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = Exception("401 unauthorized")
+
+        result = call_ai_task4.apply(
+            args=[
+                "不可重试错误测试",
+                self.user.id,
+                "deepseek",
+                "test-non-retryable-conversation",
+                None,
+                {},
+                "test-non-retryable-trace",
+            ],
+            retries=0,
+            throw=False,
+        ).result
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "401 unauthorized")
+
+        retry_step = AiTraceStepLog.objects.filter(
+            user=self.user,
+            trace_id="test-non-retryable-trace",
+            step="task_retry",
+        ).first()
+
+        self.assertIsNone(retry_step)
+
+        failed_step = AiTraceStepLog.objects.filter(
+            user=self.user,
+            trace_id="test-non-retryable-trace",
+            step="task_failed",
+        ).first()
+
+        self.assertIsNotNone(failed_step)
+        self.assertFalse(failed_step.success)
+        self.assertEqual(failed_step.detail["reason"], "non_retryable_error")
+        self.assertFalse(failed_step.detail["retryable"])
+
+        self.assertEqual(mock_call_ai_service.call_count, 1)
+
+    def test_get_ai_retry_countdown_for_rate_limit(self):
+        self.assertEqual(get_ai_retry_countdown("429 rate limit"), 10)
+
+    def test_get_ai_retry_countdown_for_temporarily_unavailable(self):
+        self.assertEqual(get_ai_retry_countdown("503 temporarily unavailable"), 5)
+
+    def test_get_ai_retry_countdown_default(self):
+        self.assertEqual(get_ai_retry_countdown("connection timeout"), 2)
+
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_records_retry_countdown(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = Exception("429 rate limit")
+
+        with self.assertRaises(Retry):
+            call_ai_task4.apply(
+                args=[
+                    "限流重试测试",
+                    self.user.id,
+                    "deepseek",
+                    "test-countdown-conversation",
+                    None,
+                    {},
+                    "test-countdown-trace",
+                ],
+                retries=0,
+                throw=True,
+            )
+
+        retry_step = AiTraceStepLog.objects.filter(
+            user=self.user,
+            trace_id="test-countdown-trace",
+            step="task_retry",
+        ).first()
+
+        self.assertIsNotNone(retry_step)
+        self.assertEqual(retry_step.detail["countdown"], 10)
+        
 
 # 测@throttle_classes([AICallThrottle])
 # 在当前测试类里临时把限流改成 2/minute
