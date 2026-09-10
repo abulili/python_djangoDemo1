@@ -1293,6 +1293,52 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             "result": None,
             "error": "",
         }
+
+        task_owner_trace_id = task_owner.get("trace_id", "")
+        data["trace_id"] = task_owner_trace_id
+
+        if status_key in ["PENDING", "STARTED", "RETRY"] and task_owner_trace_id:
+            timeout_minutes = getattr(settings, "AI_TASK_TIMEOUT_MINUTES", 5)
+            # 当前时间 - 5 分钟
+            timeout_before = timezone.now() - timedelta(minutes=timeout_minutes)
+
+            has_terminal_step = AiTraceStepLog.objects.filter(
+                trace_id=task_owner_trace_id,
+                step__in=["task_done", "task_failed"],
+            ).exists()
+
+            old_task_start = AiTraceStepLog.objects.filter(
+                trace_id=task_owner_trace_id,
+                step="task_start",
+                created_at__lt=timeout_before, # 创建时间，超过五分钟还卡在这就说明任务卡住或者超时了
+            ).first()
+
+            has_timeout_step = AiTraceStepLog.objects.filter(
+                trace_id=task_owner_trace_id,
+                step="task_timeout",
+            ).exists()
+
+            if old_task_start and not has_terminal_step:
+                if not has_timeout_step:
+                    AiTraceStepLog.objects.create(
+                        user=request.user,
+                        trace_id=task_owner_trace_id,
+                        conversation_id=task_owner.get("conversation_id", ""),
+                        step="task_timeout",
+                        success=False,
+                        error_message=f"任务超过 {timeout_minutes} 分钟仍未完成",
+                        detail={
+                            "task_id": task_id,
+                            "celery_status": status_key,
+                            "timeout_minutes": timeout_minutes,
+                        },
+                    )
+
+                data["status"] = "failed"
+                data["status_text"] = "任务超时"
+                data["error"] = f"任务超过 {timeout_minutes} 分钟仍未完成，请重新提交"
+                return success_response(data)
+
         
         if status_key == 'SUCCESS':
             result = task.result or {}

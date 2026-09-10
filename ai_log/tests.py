@@ -31,6 +31,9 @@ from ai_log.throttles import AICallThrottle, TaskStatusThrottle
 
 from celery.exceptions import Retry
 
+from django.utils import timezone
+from datetime import timedelta
+
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
         # 测文档切片
@@ -2184,6 +2187,120 @@ class TaskStatusResultTests(TestCase):
         self.assertEqual(response.data["data"]["status_text"], "排队中")
         self.assertEqual(response.data["data"]["result"], None)
         self.assertEqual(response.data["data"]["error"], "")
+
+    # 把超时时间临时改成 1 分钟；
+    @override_settings(AI_TASK_TIMEOUT_MINUTES=1)
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_pending_timeout_uses_settings_value(self, mock_async_result):
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        trace_id = "task-timeout-settings-trace-001"
+
+        cache.set("ai_task_owner:task-timeout-settings-id", {
+            "user_id": self.user.id,
+            "conversation_id": "conversation-timeout-settings",
+            "trace_id": trace_id,
+        }, timeout=3600)
+
+        start_step = AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id="conversation-timeout-settings",
+            step="task_start",
+            query="配置超时测试",
+        )
+        start_step.created_at = timezone.now() - timedelta(minutes=2)
+        start_step.save(update_fields=["created_at"])
+
+        response = self.client.get("/api/logs/task/task-timeout-settings-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["status"], "failed")
+        self.assertEqual(response.data["data"]["status_text"], "任务超时")
+
+        timeout_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            step="task_timeout",
+        )
+
+        self.assertEqual(timeout_step.detail["timeout_minutes"], 1)
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_pending_timeout(self, mock_async_result):
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        trace_id = "task-timeout-trace-001"
+
+        cache.set("ai_task_owner:task-timeout-id", {
+            "user_id": self.user.id,
+            "conversation_id": "conversation-timeout",
+            "trace_id": trace_id,
+        }, timeout=3600)
+
+        start_step = AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id="conversation-timeout",
+            step="task_start",
+            query="超时测试问题",
+        )
+
+        start_step.created_at = timezone.now() - timedelta(minutes=10)
+        start_step.save(update_fields=["created_at"])
+
+        response = self.client.get("/api/logs/task/task-timeout-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["status"], "failed")
+        self.assertEqual(response.data["data"]["status_text"], "任务超时")
+        self.assertIn("任务超过", response.data["data"]["error"])
+
+        timeout_step = AiTraceStepLog.objects.filter(
+            trace_id=trace_id,
+            step="task_timeout",
+        ).first()
+
+        self.assertIsNotNone(timeout_step)
+        self.assertFalse(timeout_step.success)
+        self.assertEqual(timeout_step.detail["task_id"], "task-timeout-id")
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_pending_timeout_only_records_once(self, mock_async_result):
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        trace_id = "task-timeout-once-trace-001"
+
+        cache.set("ai_task_owner:task-timeout-once-id", {
+            "user_id": self.user.id,
+            "conversation_id": "conversation-timeout-once",
+            "trace_id": trace_id,
+        }, timeout=3600)
+
+        start_step = AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id="conversation-timeout-once",
+            step="task_start",
+            query="超时只记录一次测试",
+        )
+        start_step.created_at = timezone.now() - timedelta(minutes=10)
+        start_step.save(update_fields=["created_at"])
+
+        self.client.get("/api/logs/task/task-timeout-once-id/")
+        self.client.get("/api/logs/task/task-timeout-once-id/")
+
+        timeout_count = AiTraceStepLog.objects.filter(
+            trace_id=trace_id,
+            step="task_timeout",
+        ).count()
+
+        self.assertEqual(timeout_count, 1)
 
     @patch("ai_log.views.AsyncResult")
     def test_task_status_success_with_result(self, mock_async_result):
