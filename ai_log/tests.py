@@ -29,7 +29,7 @@ from django.core.cache import cache
 
 from ai_log.throttles import AICallThrottle, TaskStatusThrottle
 
-from celery.exceptions import Retry
+from celery.exceptions import Retry, SoftTimeLimitExceeded
 
 from django.utils import timezone
 from datetime import timedelta
@@ -1124,6 +1124,47 @@ class AiTraceStepLogApiTests(TestCase):
         ).first()
 
         self.assertIsNone(failed_log)
+
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_creates_failed_log_when_soft_time_limit_exceeded(self, mock_call_ai_service):
+        # 只要代码里调用 call_ai_service(...)，不去真的请求，立刻抛出 SoftTimeLimitExceeded 这个异常
+        mock_call_ai_service.side_effect = SoftTimeLimitExceeded()
+
+        trace_id = "test-soft-time-limit-trace"
+        conversation_id = "test-soft-time-limit-conversation"
+
+        result = call_ai_task4.apply(
+            args=[
+                "软超时测试问题",
+                self.user.id,
+                "deepseek",
+                conversation_id,
+                None,
+                {},
+                trace_id,
+            ]
+        ).get()
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "AI任务执行超时")
+        self.assertEqual(result["trace_id"], trace_id)
+
+        failed_step = AiTraceStepLog.objects.filter(
+            trace_id=trace_id,
+            step="task_failed",
+        ).first()
+
+        self.assertIsNotNone(failed_step)
+        self.assertFalse(failed_step.success)
+        self.assertEqual(failed_step.error_message, "AI任务执行超时")
+        self.assertEqual(failed_step.detail["reason"], "soft_time_limit_exceeded")
+
+        log = AICallLog.objects.filter(trace_id=trace_id).first()
+
+        self.assertIsNotNone(log)
+        self.assertFalse(log.success)
+        self.assertEqual(log.response, "AI任务执行超时")
+
 
     @patch("ai_log.views.call_ai_task4.delay")
     def test_call_company_ai4_creates_enqueue_trace_step(self, mock_delay):

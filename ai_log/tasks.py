@@ -7,6 +7,8 @@ from .models import AICallLog, AiTraceStepLog
 from django.contrib.auth.models import User
 from .services import call_ai_service
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 logger = logging.getLogger(__name__)
 
 @shared_task
@@ -196,7 +198,9 @@ def get_ai_retry_countdown(error_message):
 
     return 2
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=2) # self--Celery task 对象
+@shared_task(bind=True, max_retries=3, default_retry_delay=2, soft_time_limit=240,
+    time_limit=300) # self--Celery task 对象 
+    # soft_time_limit=240：跑到 240 秒时，Celery 先给任务一个“软提醒/软中断” time_limit=300：跑到 300 秒时，Celery 强制终止任务
 def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, template_name=None, template_vars=None,trace_id=""):
     """
     异步调用AI模型，存结果到数据库。
@@ -288,6 +292,53 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
             'conversation_id': conversation_id,
             "trace_id": trace_id,
             "total_tokens": result.get("total_tokens", 0),
+        }
+    except SoftTimeLimitExceeded as e:
+        """
+        time_limit 的作用是防极端情况,直接停止
+        
+        soft_time_limit 抛出来了，但代码没捕获住
+        第三方 SDK 卡死，无法正常响应 Python 异常
+        任务卡在某些底层 IO / C 扩展里
+        代码进入死循环或阻塞点，软超时没能干净退出
+        """
+        duration = time.time() - start_time
+        error_message = "AI任务执行超时"
+
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            step="task_failed",
+            query=prompt,
+            success=False,
+            error_message=error_message,
+            duration=duration,
+            detail={
+                "reason": "soft_time_limit_exceeded",
+                "soft_time_limit": 240,
+                "time_limit": 300,
+            },
+        )
+
+        AICallLog.objects.create(
+            conversation_id=conversation_id or "",
+            prompt=prompt,
+            response=error_message,
+            duration=duration,
+            success=False,
+            user=user,
+            model_name=model_key or "deepseek",
+            trace_id=trace_id,
+        )
+
+        logger.exception("call_ai_task4 执行超时")
+
+        return {
+            "status": "error",
+            "message": error_message,
+            "trace_id": trace_id,
+            "conversation_id": conversation_id,
         }
     except Exception as e:
         error_message = str(e)
