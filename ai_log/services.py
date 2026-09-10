@@ -235,7 +235,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
 
     # 追加当前用户问题
     messages.append({"role": "user","content": prompt})
-    logger.debug('messages2', messages)
+    logger.debug("messages2: %s", messages)
     # 查缓存
     cached_result = cache.get(cache_key)
     if cached_result:
@@ -258,7 +258,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
             'from_cache': True,
             'duration': 0.0,
         },True
-    logger.debug('messages3', messages)
+    logger.debug("messages3: %s", messages)
     # 调用AI
     client = OpenAI(
         api_key = model_config['api_key'],
@@ -266,7 +266,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
     )
     start_time = time.time()
 
-    logger.debug('messages4', messages)
+    logger.debug("messages4: %s", messages)
 
     try:
         response = client.chat.completions.create(

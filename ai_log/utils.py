@@ -50,3 +50,19 @@ def check_user_ai_rate_limit(user_id, limit=10, window_seconds=60):
     cache.incr(cache_key)
     
     return True, current_count + 1
+
+def check_user_task_status_rate_limit(user_id, limit=120, window_seconds=60):
+    """
+    任务状态查询限流。
+    用 Redis incr 做计数，比 DRF UserRateThrottle 更适合高并发下保护轮询接口。
+    """
+    cache_key = f"task_status_rate_limit:{user_id}"
+
+    added = cache.add(cache_key, 0, timeout=window_seconds)
+    current_count = cache.incr(cache_key)
+
+    if current_count > limit:
+        return False, current_count
+
+    return True, current_count
+

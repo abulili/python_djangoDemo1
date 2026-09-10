@@ -69,7 +69,7 @@ from .services import (
 
 import re
 
-from .utils import check_user_ai_rate_limit
+from .utils import check_user_ai_rate_limit, check_user_task_status_rate_limit
 
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
@@ -719,23 +719,15 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        allowed, current_count = check_user_ai_rate_limit(request.user.id)
-
-        if not allowed:
-            return error_response(
-                "请求过于频繁，请稍后再试",
-                code=429,
-                data={
-                    "current_count": current_count,
-                    "limit": 10,
-                    "window_seconds": 60,
-                }
-            )
-        
         trace_id = getattr(request, "trace_id", "")
+
+        idempotent_key = None
+        idempotent_lock_key = None
+        got_idempotent_lock = False
 
         if request_id:
             idempotent_key = f"ai_task_idempotent:{request.user.id}:{request_id}"
+            idempotent_lock_key = f"ai_task_idempotent_lock:{request.user.id}:{request_id}"
             cached_task_id = cache.get(idempotent_key)
 
             if cached_task_id:
@@ -759,6 +751,57 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                     "message": "重复请求已复用原任务",
                 }, message="任务已存在")
 
+        got_idempotent_lock = cache.add(idempotent_lock_key, "1", timeout=10)
+        if not got_idempotent_lock:
+            for _ in range(10):
+                # 等待0.05s 把消息写入redis队列很快，给一个等待窗口，最多查10次
+                time.sleep(0.1)
+                cached_task_id = cache.get(idempotent_key)
+
+                if cached_task_id:
+                    AiTraceStepLog.objects.create(
+                        user=request.user,
+                        trace_id=trace_id,
+                        conversation_id=conversation_id or "",
+                        step="idempotent_hit",
+                        query=user_prompt,
+                        detail={
+                            "request_id": request_id,
+                            "task_id": cached_task_id,
+                            "source": "wait_for_lock",
+                        },
+                        success=True,
+                    )
+
+                    return success_response({
+                        "task_id": cached_task_id,
+                        "status": "processing",
+                        "idempotent": True,
+                        "message": "重复请求已复用原任务",
+                    }, message="任务已存在")
+            # 409防止极端情况
+            return error_response(
+                "任务正在提交中，请稍后查询",
+                code=409,
+                data={
+                    "request_id": request_id,
+                }
+            )
+
+        allowed, current_count = check_user_ai_rate_limit(request.user.id)
+
+        if not allowed:
+            return error_response(
+                "请求过于频繁，请稍后再试",
+                code=429,
+                data={
+                    "current_count": current_count,
+                    "limit": 10,
+                    "window_seconds": 60,
+                }
+            )
+        
+        
         # 如果传了模板，用模板渲染
         if template_name:
             # 用户输入的prompt中作为变量之一
@@ -1203,6 +1246,19 @@ class AICallLogViewSet(viewsets.ModelViewSet):
     """
     @action(detail=False, methods=['get'],url_path='task/(?P<task_id>[^/.]+)', throttle_classes=[TaskStatusThrottle],)
     def get_task_result(self, request, task_id=None):
+        allowed, current_count = check_user_task_status_rate_limit(request.user.id)
+
+        if not allowed:
+            return error_response(
+                "任务查询过于频繁，请稍后再试",
+                code=429,
+                data={
+                    "current_count": current_count,
+                    "limit": 120,
+                    "window_seconds": 60,
+                }
+            )
+
         task_owner_key = f"ai_task_owner:{task_id}"
         task_owner = cache.get(task_owner_key)
 

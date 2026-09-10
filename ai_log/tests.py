@@ -23,6 +23,7 @@ from ai_log.tasks import call_ai_task4, get_ai_retry_countdown
 
 from django.test import override_settings
 from unittest.mock import patch
+import unittest
 
 from django.core.cache import cache
 
@@ -1832,6 +1833,235 @@ class AICallIdempotentTests(TestCase):
         self.assertFalse(response2.data["data"]["idempotent"])
 
         self.assertEqual(mock_call_ai_service.call_count, 2)
+
+class ConcurrencyProtectionTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+        self.user = User.objects.create_user(
+            username="concurrency_user",
+            password="123456"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    @patch("ai_log.views.call_ai_task4.delay")
+    def test_same_request_id_reuses_one_task_under_repeated_submit(self, mock_delay):
+        class FakeTask:
+            id = "concurrency-task-001"
+
+        mock_delay.return_value = FakeTask()
+
+        payload = {
+            "prompt": "并发重复提交测试",
+            "model": "deepseek",
+            "conversation_id": "concurrency-conversation-001",
+            "request_id": "same-request-id-001",
+        }
+
+        responses = [
+            self.client.post("/api/logs/call_company_ai4/", payload, format="json")
+            for _ in range(20)
+        ]
+        print([response.status_code for response in responses])
+
+        self.assertTrue(all(response.status_code == 200 for response in responses))
+        # 同一个 request_id,连续提交 20 次, 后端只创建 1 个 Celery 任务
+        # mock_delay代替了call_ai_task4.delay(...)
+        self.assertEqual(mock_delay.call_count, 1)
+
+        task_ids = [
+            response.data["data"]["task_id"]
+            for response in responses
+        ]
+        self.assertEqual(set(task_ids), {"concurrency-task-001"})
+
+        idempotent_hits = AiTraceStepLog.objects.filter(
+            user=self.user,
+            conversation_id="concurrency-conversation-001",
+            step="idempotent_hit",
+        ).count()
+
+        # 后面 19 次都复用旧 task_id，trace 步骤日志
+        # 第一次请求：没有缓存，后续走cache.get
+        self.assertEqual(idempotent_hits, 19)
+
+    @patch("ai_log.views.call_ai_task4.delay")
+    def test_different_request_id_is_limited_under_repeated_submit(self, mock_delay):
+        class FakeTask:
+            def __init__(self, task_id):
+                self.id = task_id
+
+        mock_delay.side_effect = [
+            FakeTask(f"concurrency-task-{index}")
+            for index in range(20)
+        ]
+
+        responses = [
+            self.client.post("/api/logs/call_company_ai4/", {
+                "prompt": f"并发新请求测试 {index}",
+                "model": "deepseek",
+                "conversation_id": "concurrency-conversation-002",
+                "request_id": f"different-request-id-{index}",
+            }, format="json")
+            for index in range(20)
+        ]
+
+        status_codes = [response.status_code for response in responses]
+
+        self.assertEqual(status_codes.count(200), 10)
+        self.assertEqual(status_codes.count(429), 10)
+        self.assertEqual(mock_delay.call_count, 10)
+
+    @patch("ai_log.views.AsyncResult")
+    def test_same_task_status_query_is_limited_under_repeated_polling(self, mock_async_result):
+        task_id = "concurrency-poll-task-001"
+
+        cache.set(f"ai_task_owner:{task_id}", {
+            "user_id": self.user.id,
+            "conversation_id": "concurrency-conversation-003",
+            "trace_id": "concurrency-trace-003",
+        }, timeout=3600)
+
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        responses = [
+            self.client.get(f"/api/logs/task/{task_id}/")
+            for _ in range(130)
+        ]
+
+        status_codes = [response.status_code for response in responses]
+
+        self.assertEqual(status_codes.count(200), 120)
+        self.assertEqual(status_codes.count(429), 10)
+        # 因为"task_status": "120/minute"
+        self.assertEqual(mock_async_result.call_count, 120)
+
+    @patch("ai_log.views.AsyncResult")
+    def test_trace_detail_still_available_when_task_owner_cache_missing(self, mock_async_result):
+        trace_id = "concurrency-trace-recover-001"
+
+        AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id=trace_id,
+            conversation_id="concurrency-conversation-recover",
+            step="enqueue_task",
+            query="恢复机制测试",
+            detail={
+                "task_id": "expired-task-id-001",
+            },
+            success=True,
+        )
+
+        response = self.client.get("/api/logs/task/expired-task-id-001/")
+        self.assertEqual(response.status_code, 404)
+        mock_async_result.assert_not_called()
+
+        trace_response = self.client.get(f"/api/logs/trace/{trace_id}/")
+        self.assertEqual(trace_response.status_code, 200)
+        self.assertEqual(trace_response.data["data"]["trace_id"], trace_id)
+        self.assertEqual(trace_response.data["data"]["summary"]["step_count"], 1)
+
+    @unittest.skip("真实 HTTP 并发行为用 scripts/light_load_test.py 验证，Django TestCase 多线程 client 不稳定")
+    @patch("ai_log.views.call_ai_task4.delay")
+    def test_same_request_id_reuses_one_task_under_parallel_submit(self, mock_delay):
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        class FakeTask:
+            id = "parallel-task-001"
+
+        def slow_delay(*args, **kwargs):
+            time.sleep(0.2)
+            return FakeTask()
+
+        mock_delay.side_effect = slow_delay
+
+        payload = {
+            "prompt": "并发同时提交测试",
+            "model": "deepseek",
+            "conversation_id": "parallel-conversation-001",
+            "request_id": "parallel-request-id-001",
+        }
+
+        def submit_once():
+            client = APIClient()
+            client.force_authenticate(user=self.user)
+            return client.post(
+                "/api/logs/call_company_ai4/",
+                payload,
+                format="json"
+            )
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [
+                executor.submit(submit_once)
+                for _ in range(20)
+            ]
+            responses = [
+                future.result()
+                for future in as_completed(futures)
+            ]
+
+        status_codes = [response.status_code for response in responses]
+        task_ids = [
+            response.data["data"].get("task_id")
+            for response in responses
+            if response.status_code == 200
+        ]
+
+        status_codes = [response.status_code for response in responses]
+
+        print("parallel submit status_codes:", status_codes)
+        print("parallel submit bodies:", [
+            getattr(response, "data", None)
+            for response in responses[:5]
+        ])
+        print("mock_delay.call_count:", mock_delay.call_count)
+
+        self.assertEqual(status_codes.count(200), 20, status_codes)
+        self.assertEqual(mock_delay.call_count, 1)
+        self.assertEqual(set(task_ids), {"parallel-task-001"})
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_query_is_strictly_limited_under_parallel_polling(self, mock_async_result):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        task_id = "parallel-poll-task-001"
+
+        cache.set(f"ai_task_owner:{task_id}", {
+            "user_id": self.user.id,
+            "conversation_id": "parallel-poll-conversation-001",
+            "trace_id": "parallel-poll-trace-001",
+        }, timeout=3600)
+
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        def poll_once():
+            return self.client.get(f"/api/logs/task/{task_id}/")
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [
+                executor.submit(poll_once)
+                for _ in range(130)
+            ]
+            responses = [
+                future.result()
+                for future in as_completed(futures)
+            ]
+
+        status_codes = [response.status_code for response in responses]
+
+        self.assertEqual(status_codes.count(200), 120)
+        self.assertEqual(status_codes.count(429), 10)
+        self.assertEqual(mock_async_result.call_count, 120)
 
 @override_settings(
     CACHES={
