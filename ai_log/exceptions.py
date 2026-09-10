@@ -16,10 +16,16 @@ def custom_exception_handler(exc, context):
     response = exception_handler(exc, context)
 
     if isinstance(exc,Throttled):
+        wait = getattr(exc, "wait", None)
+        message = "请求过于频繁，请稍后再试"
+        if wait:
+            message = f"请求过于频繁，请 {int(wait)} 秒后再试"
         return Response({
             "code":429,
-            "message":"请求过于频繁，请稍后再试",
-            "data":None
+            "message":message,
+            "data":{
+                "wait": wait
+            }
         },status=429)
 
     # 如果DRF能处理，就用它的结果

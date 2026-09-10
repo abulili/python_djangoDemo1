@@ -1841,6 +1841,7 @@ class AICallIdempotentTests(TestCase):
         }
     },
     REST_FRAMEWORK={
+        "EXCEPTION_HANDLER": "ai_log.exceptions.custom_exception_handler",
         "DEFAULT_THROTTLE_RATES": {
             "task_status": "2/minute",
             "ai_call": "100/minute",
@@ -1849,7 +1850,6 @@ class AICallIdempotentTests(TestCase):
         },
     }
 )
-
 class TaskStatusThrottleTestCase(TestCase):
     def setUp(self):
         cache.clear()
@@ -1899,6 +1899,32 @@ class TaskStatusThrottleTestCase(TestCase):
         self.assertEqual(response3.status_code, 429)
 
         self.assertEqual(mock_async_result.call_count, 2)
+
+    @patch("ai_log.views.AsyncResult")
+    def test_task_status_throttle_response_format(self, mock_async_result):
+        task_id = "throttle-format-task-id"
+
+        cache.set(f"ai_task_owner:{task_id}", {
+            "user_id": self.user.id,
+            "conversation_id": "throttle-format-conversation",
+            "trace_id": "throttle-format-trace",
+        }, timeout=300)
+
+        mock_task = mock_async_result.return_value
+        mock_task.state = "PENDING"
+        mock_task.result = None
+
+        response1 = self.client.get(f"/api/logs/task/{task_id}/")
+        response2 = self.client.get(f"/api/logs/task/{task_id}/")
+        response3 = self.client.get(f"/api/logs/task/{task_id}/")
+
+        self.assertEqual(response1.status_code, 200)
+        self.assertEqual(response2.status_code, 200)
+        self.assertEqual(response3.status_code, 429)
+
+        self.assertEqual(response3.data["code"], 429)
+        self.assertIn("请求过于频繁", response3.data["message"])
+        self.assertIn("wait", response3.data["data"])
 
 class TaskStatusResultTests(TestCase):
     def setUp(self):
