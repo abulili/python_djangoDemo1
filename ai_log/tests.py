@@ -2758,3 +2758,146 @@ class TaskStatusPermissionTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
         mock_async_result.assert_not_called()
+
+class ObservabilitySummaryTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="observability_user",
+            password="123456",
+        )
+        self.other_user = User.objects.create_user(
+            username="observability_other_user",
+            password="123456",
+        )
+        self.admin = User.objects.create_superuser(
+            username="observability_admin",
+            password="123456",
+            email="observability_admin@example.com",
+        )
+
+        self.client = APIClient()
+
+    def test_observability_summary_only_returns_current_user_data(self):
+        self.client.force_authenticate(user=self.user)
+
+        AICallLog.objects.create(
+            user=self.user,
+            prompt="成功调用",
+            response="成功回答",
+            success=True,
+            duration=1.0,
+            total_tokens=10,
+            cost=0.01,
+        )
+        AICallLog.objects.create(
+            user=self.user,
+            prompt="失败调用",
+            response="失败原因",
+            success=False,
+            duration=3.0,
+            total_tokens=20,
+            cost=0.02,
+        )
+        AICallLog.objects.create(
+            user=self.other_user,
+            prompt="别人调用",
+            response="别人回答",
+            success=True,
+            duration=100.0,
+            total_tokens=999,
+            cost=9.99,
+        )
+
+        AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id="obs-trace-001",
+            step="task_retry",
+            success=False,
+        )
+        AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id="obs-trace-001",
+            step="task_timeout",
+            success=False,
+        )
+        AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id="obs-trace-001",
+            step="task_recovered",
+            success=True,
+        )
+        AiTraceStepLog.objects.create(
+            user=self.other_user,
+            trace_id="obs-other-trace",
+            step="task_timeout",
+            success=False,
+        )
+
+        response = self.client.get("/api/logs/observability-summary/")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.data["data"]
+
+        self.assertEqual(data["total_ai_calls"], 2)
+        self.assertEqual(data["success_count"], 1)
+        self.assertEqual(data["failed_count"], 1)
+        self.assertEqual(data["success_rate"], "50.00%")
+        self.assertEqual(data["retry_count"], 1)
+        self.assertEqual(data["timeout_count"], 1)
+        self.assertEqual(data["recovered_count"], 1)
+        self.assertEqual(data["failed_step_count"], 2)
+        self.assertEqual(data["avg_duration"], 2.0)
+        self.assertEqual(data["total_tokens"], 30)
+        self.assertEqual(data["total_cost"], 0.03)
+
+    def test_observability_summary_superuser_returns_all_data(self):
+        self.client.force_authenticate(user=self.admin)
+
+        AICallLog.objects.create(
+            user=self.user,
+            prompt="用户调用",
+            response="用户回答",
+            success=True,
+            duration=1.0,
+            total_tokens=10,
+            cost=0.01,
+        )
+        AICallLog.objects.create(
+            user=self.other_user,
+            prompt="别人失败",
+            response="失败原因",
+            success=False,
+            duration=3.0,
+            total_tokens=20,
+            cost=0.02,
+        )
+
+        AiTraceStepLog.objects.create(
+            user=self.user,
+            trace_id="obs-admin-trace-001",
+            step="task_retry",
+            success=False,
+        )
+        AiTraceStepLog.objects.create(
+            user=self.other_user,
+            trace_id="obs-admin-trace-002",
+            step="task_timeout",
+            success=False,
+        )
+
+        response = self.client.get("/api/logs/observability-summary/")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.data["data"]
+
+        self.assertEqual(data["total_ai_calls"], 2)
+        self.assertEqual(data["success_count"], 1)
+        self.assertEqual(data["failed_count"], 1)
+        self.assertEqual(data["success_rate"], "50.00%")
+        self.assertEqual(data["retry_count"], 1)
+        self.assertEqual(data["timeout_count"], 1)
+        self.assertEqual(data["failed_step_count"], 2)
+
+
+
+    

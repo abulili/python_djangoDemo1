@@ -1851,6 +1851,48 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             }
         })
 
+    @action(detail=False, methods=["get"], url_path="observability-summary")
+    def observability_summary(self, request):
+        user = request.user
+
+        ai_logs = AICallLog.objects.all()
+        trace_steps = AiTraceStepLog.objects.all()
+
+        if not user.is_superuser:
+            ai_logs = ai_logs.filter(user=user)
+            trace_steps = trace_steps.filter(user=user)
+
+        total_ai_calls = ai_logs.count()
+        success_count = ai_logs.filter(success=True).count()
+        failed_count = ai_logs.filter(success=False).count()
+
+        retry_count = trace_steps.filter(step="task_retry").count()
+        timeout_count = trace_steps.filter(step="task_timeout").count()
+        recovered_count = trace_steps.filter(step="task_recovered").count()
+        failed_step_count = trace_steps.filter(success=False).count()
+
+        avg_duration = ai_logs.aggregate(avg_duration=Avg("duration"))["avg_duration"] or 0
+        total_tokens = ai_logs.aggregate(total_tokens=Sum("total_tokens"))["total_tokens"] or 0
+        total_cost = ai_logs.aggregate(total_cost=Sum("cost"))["total_cost"] or 0
+
+        success_rate = 0
+        if total_ai_calls:
+            success_rate = success_count / total_ai_calls * 100
+
+        return success_response({
+            "total_ai_calls": total_ai_calls,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "success_rate": f"{success_rate:.2f}%",
+            "retry_count": retry_count,
+            "timeout_count": timeout_count,
+            "recovered_count": recovered_count,
+            "failed_step_count": failed_step_count,
+            "avg_duration": round(avg_duration, 2),
+            "total_tokens": total_tokens,
+            "total_cost": round(total_cost, 4),
+        })
+
 
 
 class AiTraceStepLogViewSet(viewsets.ReadOnlyModelViewSet):
