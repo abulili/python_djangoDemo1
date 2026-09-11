@@ -234,6 +234,12 @@ AI_MODELS = {
 }
 DEFAULT_AI_MODEL = 'deepseek'
 
+FEISHU_BOT_WEBHOOK = os.getenv('FEISHU_BOT_WEBHOOK', '')
+AI_NOTIFY_ENABLED = os.getenv('AI_NOTIFY_ENABLED', 'false').lower() == 'true'
+AI_NOTIFY_ON_SUCCESS = os.getenv('AI_NOTIFY_ON_SUCCESS', 'false').lower() == 'true'
+AI_NOTIFY_SLOW_SECONDS = float(os.getenv('AI_NOTIFY_SLOW_SECONDS', '5') or 5)
+AI_NOTIFY_HIGH_COST = float(os.getenv('AI_NOTIFY_HIGH_COST', '0.01') or 0.01)
+
 # 允许所有源（开发阶段用）
 # CORS_ALLOW_ALL_ORIGINS = True
 
@@ -253,3 +259,7 @@ CORS_EXPOSE_HEADERS = [
     "X-Trace-Id",
     "X-Response-Time",
 ]
+
+AI_TASK_TIMEOUT_MINUTES = 5
+AI_TASK_OWNER_CACHE_SECONDS = 3600
+AI_TASK_RECOVERED_OWNER_CACHE_SECONDS = 600

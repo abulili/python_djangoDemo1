@@ -9,6 +9,8 @@ from .services import call_ai_service
 
 from celery.exceptions import SoftTimeLimitExceeded
 
+from .notifications.feishu import AINotificationContext, send_feishu_ai_notification
+
 logger = logging.getLogger(__name__)
 
 @shared_task
@@ -262,6 +264,33 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
             trace_id=trace_id,
             task_id=self.request.id or "",
         )
+
+        # 飞书
+        notify_result = send_feishu_ai_notification(AINotificationContext(
+            success=success,
+            user_id=user.id,
+            model_name=model_key or "deepseek",
+            prompt=prompt,
+            response=result.get("reply", ""),
+            error_message="" if success else result.get("reply", "AI调用失败"),
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            duration=task_duration,
+            total_tokens=result.get("total_tokens", 0),
+            cost=result.get("cost", 0.0),
+            log_id=log.id,
+        ))
+
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            step="notify_feishu",
+            query=prompt,
+            success=notify_result.get("sent", False) or notify_result.get("reason") == "rule_skipped",
+            detail=notify_result,
+        )
+
         AiTraceStepLog.objects.create(
             user=user,
             trace_id=trace_id,
