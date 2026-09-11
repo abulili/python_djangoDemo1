@@ -1332,7 +1332,7 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             "FAILURE": ("failed", "处理失败"),
         }
         status_value, status_text = state_map.get(status_key, ("unknown", "未知状态"))
-        print('get_task_result', status_key, status_value, status_text)
+        logger.debug("task state: %s", status_key)
 
         data = {
             "task_id": task_id,

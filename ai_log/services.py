@@ -209,14 +209,14 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
     
     # 如果指定了模板，用模板渲染prompt
     if template_name:
-        logger.debug('template_name', template_name)
-        logger.debug('template_vars', template_vars)
+        logger.debug("template_name: %s", template_name)
+        logger.debug("template_vars: %s", template_vars)
         rendered_prompt = get_prompt(template_name, template_vars)
         if rendered_prompt:
             prompt = rendered_prompt
         else:
             logger.warning(f"模板{template_name}不存在或未启用")
-    logger.debug('prompt', prompt)
+    logger.debug("prompt: %s", prompt)
     if not model_key:
         model_key = getattr(settings,'DEFAULT_AI_MODEL', 'deepseek')
     model_config = settings.AI_MODELS.get(model_key)
@@ -227,7 +227,7 @@ def call_ai_service(prompt, model_key = None, conversation_id=None, template_nam
     cache_key = f"ai_response:{model_key}{conversation_id}:{prompt[:50]}"
     # 消息列表
     messages = []
-    logger.debug('messages1', messages, conversation_id)
+    logger.debug("messages1: %s, conversation_id: %s", messages, conversation_id)
     # 如果有会话ID，加载历史对话
     if conversation_id:
         history = get_coversation_history(conversation_id, user=user)

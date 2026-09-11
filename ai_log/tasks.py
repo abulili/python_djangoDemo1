@@ -105,7 +105,7 @@ def call_ai_task2(prompt, user_id, model_key=None,trace_id=""):
         duration = time.time() - start_time
 
         ai_reply = response.choices[0].message.content if response.choices[0].message else response.response
-        logger.debug('response',str(response))
+        logger.debug("response: %s", str(response))
         # 存数据库
         user = User.objects.get(id=user_id)
         log = AICallLog.objects.create(
@@ -127,7 +127,7 @@ def call_ai_task2(prompt, user_id, model_key=None,trace_id=""):
             'model_name':model_key,
         }
     except Exception as e:
-        logger.debug('call_ai_task2 error',str(e))
+        logger.debug("call_ai_task2 error: %s", str(e))
         logger.error(f"AI调用失败：{e}")
         # 存一条失败的日志
         try:

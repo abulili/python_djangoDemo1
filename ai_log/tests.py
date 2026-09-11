@@ -1946,7 +1946,7 @@ class ConcurrencyProtectionTests(TestCase):
             self.client.post("/api/logs/call_company_ai4/", payload, format="json")
             for _ in range(20)
         ]
-        print([response.status_code for response in responses])
+        # print([response.status_code for response in responses])
 
         self.assertTrue(all(response.status_code == 200 for response in responses))
         # 同一个 request_id,连续提交 20 次, 后端只创建 1 个 Celery 任务
@@ -2097,12 +2097,12 @@ class ConcurrencyProtectionTests(TestCase):
 
         status_codes = [response.status_code for response in responses]
 
-        print("parallel submit status_codes:", status_codes)
-        print("parallel submit bodies:", [
-            getattr(response, "data", None)
-            for response in responses[:5]
-        ])
-        print("mock_delay.call_count:", mock_delay.call_count)
+        # print("parallel submit status_codes:", status_codes)
+        # print("parallel submit bodies:", [
+        #     getattr(response, "data", None)
+        #     for response in responses[:5]
+        # ])
+        # print("mock_delay.call_count:", mock_delay.call_count)
 
         self.assertEqual(status_codes.count(200), 20, status_codes)
         self.assertEqual(mock_delay.call_count, 1)
