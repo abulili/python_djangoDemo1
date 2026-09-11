@@ -259,7 +259,8 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
             total_tokens=result.get('total_tokens', 0),
             cost=result.get('cost', 0.0),
             conversation_id=conversation_id,
-            trace_id=trace_id
+            trace_id=trace_id,
+            task_id=self.request.id or "",
         )
         AiTraceStepLog.objects.create(
             user=user,
@@ -296,7 +297,7 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
     except SoftTimeLimitExceeded as e:
         """
         time_limit 的作用是防极端情况,直接停止
-        
+
         soft_time_limit 抛出来了，但代码没捕获住
         第三方 SDK 卡死，无法正常响应 Python 异常
         任务卡在某些底层 IO / C 扩展里
@@ -330,6 +331,7 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
             user=user,
             model_name=model_key or "deepseek",
             trace_id=trace_id,
+            task_id=self.request.id or "",
         )
 
         logger.exception("call_ai_task4 执行超时")

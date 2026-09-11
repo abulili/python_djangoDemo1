@@ -41,7 +41,13 @@ class AICallLog(models.Model):
 
     # db_index: 给这个字段加索引，后续按 trace_id 搜索会快。
     trace_id = models.CharField(max_length=64, verbose_name="链路追踪ID", blank=True, null=True, db_index=True)
-    
+    task_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        verbose_name="Celery任务ID",
+    )
     # 显示规则 在后台或命令行里打印这个对象时，会看到什么样的文字
     def __str__(self):
         # 显示“调用时间 - 用户输入的前20个字
@@ -192,6 +198,7 @@ class AiTraceStepLog(models.Model):
     error_message = models.TextField(verbose_name="错误信息", blank=True, default="")
     duration = models.FloatField(verbose_name="步骤耗时", default=0.0)
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    
 
     class Meta:
         verbose_name="AI请求步骤追踪日志"

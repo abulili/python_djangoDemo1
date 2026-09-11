@@ -352,6 +352,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             return error_response('请提供query', code=400)
 
         if request_id:
+            # 幂等标记 key
             idempotent_key = f"rag_ask_idempotent:{request.user.id}:{request_id}"
             cached_result = cache.get(idempotent_key)
 
@@ -751,42 +752,42 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                     "message": "重复请求已复用原任务",
                 }, message="任务已存在")
 
-        got_idempotent_lock = cache.add(idempotent_lock_key, "1", timeout=10)
-        if not got_idempotent_lock:
-            for _ in range(10):
-                # 等待0.05s 把消息写入redis队列很快，给一个等待窗口，最多查10次
-                time.sleep(0.1)
-                cached_task_id = cache.get(idempotent_key)
+            got_idempotent_lock = cache.add(idempotent_lock_key, "1", timeout=10)
+            if not got_idempotent_lock:
+                for _ in range(10):
+                    # 等待0.05s 把消息写入redis队列很快，给一个等待窗口，最多查10次
+                    time.sleep(0.1)
+                    cached_task_id = cache.get(idempotent_key)
 
-                if cached_task_id:
-                    AiTraceStepLog.objects.create(
-                        user=request.user,
-                        trace_id=trace_id,
-                        conversation_id=conversation_id or "",
-                        step="idempotent_hit",
-                        query=user_prompt,
-                        detail={
-                            "request_id": request_id,
+                    if cached_task_id:
+                        AiTraceStepLog.objects.create(
+                            user=request.user,
+                            trace_id=trace_id,
+                            conversation_id=conversation_id or "",
+                            step="idempotent_hit",
+                            query=user_prompt,
+                            detail={
+                                "request_id": request_id,
+                                "task_id": cached_task_id,
+                                "source": "wait_for_lock",
+                            },
+                            success=True,
+                        )
+
+                        return success_response({
                             "task_id": cached_task_id,
-                            "source": "wait_for_lock",
-                        },
-                        success=True,
-                    )
-
-                    return success_response({
-                        "task_id": cached_task_id,
-                        "status": "processing",
-                        "idempotent": True,
-                        "message": "重复请求已复用原任务",
-                    }, message="任务已存在")
-            # 409防止极端情况
-            return error_response(
-                "任务正在提交中，请稍后查询",
-                code=409,
-                data={
-                    "request_id": request_id,
-                }
-            )
+                            "status": "processing",
+                            "idempotent": True,
+                            "message": "重复请求已复用原任务",
+                        }, message="任务已存在")
+                # 409防止极端情况
+                return error_response(
+                    "任务正在提交中，请稍后查询",
+                    code=409,
+                    data={
+                        "request_id": request_id,
+                    }
+                )
 
         allowed, current_count = check_user_ai_rate_limit(request.user.id)
 
@@ -833,11 +834,13 @@ class AICallLogViewSet(viewsets.ModelViewSet):
             "user_id": request.user.id,
             "conversation_id": conversation_id,
             "trace_id": trace_id,
-        }, timeout=3600)
+        }, timeout=getattr(settings, "AI_TASK_OWNER_CACHE_SECONDS", 3600))
 
         if request_id:
             # 这里的 timeout=300 是 5 分钟。
             cache.set(idempotent_key, task.id, timeout=300)
+            # 写入了idempotent_key之后锁就没用了
+            cache.delete(idempotent_lock_key)
 
         # 返回任务ID和状态
         return success_response({
@@ -1263,9 +1266,56 @@ class AICallLogViewSet(viewsets.ModelViewSet):
         task_owner = cache.get(task_owner_key)
 
         if not task_owner:
-            return error_response("任务不存在或已过期", code=404)
-        if task_owner.get("user_id") != request.user.id and not request.user.is_superuser:
-            return error_response("您没有权限查看该任务的结果", code=404)
+            recovered_log = AICallLog.objects.filter(task_id=task_id).first()
+            if not recovered_log:
+                return error_response("任务不存在或已过期", code=404)
+            if recovered_log.user_id != request.user.id and not request.user.is_superuser:
+                return error_response("您没有权限查看该任务的结果", code=404)
+
+            cache.set(task_owner_key, {
+                "user_id": recovered_log.user_id,
+                "conversation_id": recovered_log.conversation_id or "",
+                "trace_id": recovered_log.trace_id or "",
+            }, timeout=getattr(settings, "AI_TASK_RECOVERED_OWNER_CACHE_SECONDS", 600))
+
+            has_recovered_step = AiTraceStepLog.objects.filter(
+                trace_id=recovered_log.trace_id or "",
+                step="task_recovered",
+            ).exists()
+            if not has_recovered_step:
+                AiTraceStepLog.objects.create(
+                    user=recovered_log.user,
+                    trace_id=recovered_log.trace_id or "",
+                    conversation_id=recovered_log.conversation_id or "",
+                    step="task_recovered",
+                    success=True,
+                    detail={
+                        "task_id": task_id,
+                        "source": "AICallLog",
+                        "restored_owner_cache": True,
+                    },
+                )
+
+            data = {
+                "task_id": task_id,
+                "celery_status": "RECOVERED",
+                "status": "success" if recovered_log.success else "failed",
+                "status_text": "处理成功" if recovered_log.success else "处理失败",
+                "trace_id": recovered_log.trace_id or "",
+                "result": None,
+                "error": "",
+            }
+
+            if recovered_log.success:
+                data["result"] = {
+                    "response": recovered_log.response,
+                    "conversation_id": recovered_log.conversation_id or "",
+                    "total_tokens": recovered_log.total_tokens,
+                    "cost": recovered_log.cost,
+                }
+            else:
+                data["error"] = recovered_log.response or "AI调用失败"
+            return success_response(data)
 
         task = AsyncResult(task_id)
         # 用 state 判断任务状态

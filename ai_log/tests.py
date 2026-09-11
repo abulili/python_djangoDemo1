@@ -1212,6 +1212,42 @@ class AiTraceStepLogApiTests(TestCase):
             trace_id,
         )
 
+    @override_settings(AI_TASK_OWNER_CACHE_SECONDS=234)
+    @patch("ai_log.views.cache.set")
+    @patch("ai_log.views.call_ai_task4.delay")
+    def test_call_company_ai4_uses_owner_cache_timeout_setting(self, mock_delay, mock_cache_set):
+        class FakeTask:
+            id = "owner-cache-timeout-task-id"
+
+        mock_delay.return_value = FakeTask()
+
+        response = self.client.post(
+            "/api/logs/call_company_ai4/",
+            {
+                "prompt": "owner cache timeout 测试",
+                "model_key": "deepseek",
+                "conversation_id": "owner-cache-timeout-conversation",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        
+        owner_cache_calls = [
+            call for call in mock_cache_set.call_args_list
+            if call.args[0] == "ai_task_owner:owner-cache-timeout-task-id"
+        ]
+
+        self.assertEqual(len(owner_cache_calls), 1)
+
+        cache_key, cache_value = owner_cache_calls[0].args
+
+        self.assertEqual(cache_key, "ai_task_owner:owner-cache-timeout-task-id")
+        self.assertEqual(cache_value["user_id"], self.user.id)
+        self.assertEqual(cache_value["conversation_id"], "owner-cache-timeout-conversation")
+        self.assertTrue(cache_value["trace_id"])
+        self.assertEqual(owner_cache_calls[0].kwargs["timeout"], 234)
+
     def test_trace_detail_counts_task_steps(self):
         trace_id = "trace-task-summary-001"
         conversation_id = "conv-task-summary-001"
@@ -2202,6 +2238,7 @@ class TaskStatusThrottleTestCase(TestCase):
 
 class TaskStatusResultTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.user = User.objects.create_user(
             username="task_result_user",
             password="123456"
@@ -2434,6 +2471,207 @@ class TaskStatusResultTests(TestCase):
         self.assertEqual(response.data["data"]["status"], "unknown")
         self.assertEqual(response.data["data"]["status_text"], "未知状态")
         self.assertEqual(response.data["data"]["result"], None) 
+
+    def test_task_status_recovers_success_result_when_owner_cache_missing(self):
+        AICallLog.objects.create(
+            user=self.user,
+            task_id="recovered-success-task-id",
+            trace_id="recovered-success-trace",
+            conversation_id="recovered-success-conversation",
+            prompt="恢复成功测试",
+            response="这是数据库恢复出来的回答",
+            success=True,
+            model_name="deepseek",
+            total_tokens=12,
+            cost=0.001,
+        )
+
+        response = self.client.get("/api/logs/task/recovered-success-task-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["celery_status"], "RECOVERED")
+        self.assertEqual(response.data["data"]["status"], "success")
+        self.assertEqual(response.data["data"]["result"]["response"], "这是数据库恢复出来的回答")
+        self.assertEqual(response.data["data"]["trace_id"], "recovered-success-trace")
+
+    def test_task_status_recovers_failed_result_when_owner_cache_missing(self):
+        AICallLog.objects.create(
+            user=self.user,
+            task_id="recovered-failed-task-id",
+            trace_id="recovered-failed-trace",
+            conversation_id="recovered-failed-conversation",
+            prompt="恢复失败测试",
+            response="AI任务执行超时",
+            success=False,
+            model_name="deepseek",
+        )
+
+        response = self.client.get("/api/logs/task/recovered-failed-task-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["celery_status"], "RECOVERED")
+        self.assertEqual(response.data["data"]["status"], "failed")
+        self.assertEqual(response.data["data"]["error"], "AI任务执行超时")
+        self.assertEqual(response.data["data"]["trace_id"], "recovered-failed-trace")
+
+    def test_task_status_recovered_result_still_checks_owner(self):
+        other_user = User.objects.create_user(
+            username="task_result_other_user",
+            password="123456",
+        )
+
+        AICallLog.objects.create(
+            user=other_user,
+            task_id="other-user-task-id",
+            trace_id="other-user-trace",
+            conversation_id="other-user-conversation",
+            prompt="别人的任务",
+            response="别人的回答",
+            success=True,
+            model_name="deepseek",
+        )
+
+        response = self.client.get("/api/logs/task/other-user-task-id/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_task_status_recovered_result_allows_superuser(self):
+        other_user = User.objects.create_user(
+            username="task_result_owner_user",
+            password="123456",
+        )
+
+        admin_user = User.objects.create_superuser(
+            username="task_result_admin",
+            password="123456",
+            email="admin@example.com",
+        )
+
+        AICallLog.objects.create(
+            user=other_user,
+            task_id="admin-recovered-task-id",
+            trace_id="admin-recovered-trace",
+            conversation_id="admin-recovered-conversation",
+            prompt="管理员恢复查询测试",
+            response="管理员可以看到的回答",
+            success=True,
+            model_name="deepseek",
+            total_tokens=18,
+            cost=0.002,
+        )
+
+        self.client.force_authenticate(user=admin_user)
+
+        response = self.client.get("/api/logs/task/admin-recovered-task-id/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["celery_status"], "RECOVERED")
+        self.assertEqual(response.data["data"]["status"], "success")
+        self.assertEqual(response.data["data"]["trace_id"], "admin-recovered-trace")
+        self.assertEqual(response.data["data"]["result"]["response"], "管理员可以看到的回答")
+
+    def test_task_status_recovered_result_restores_owner_cache(self):
+        AICallLog.objects.create(
+            user=self.user,
+            task_id="restore-owner-cache-task-id",
+            trace_id="restore-owner-cache-trace",
+            conversation_id="restore-owner-cache-conversation",
+            prompt="恢复缓存测试",
+            response="恢复缓存回答",
+            success=True,
+            model_name="deepseek",
+        )
+
+        response = self.client.get("/api/logs/task/restore-owner-cache-task-id/")
+
+        self.assertEqual(response.status_code, 200)
+
+        task_owner = cache.get("ai_task_owner:restore-owner-cache-task-id")
+
+        self.assertIsNotNone(task_owner)
+        self.assertEqual(task_owner["user_id"], self.user.id)
+        self.assertEqual(task_owner["conversation_id"], "restore-owner-cache-conversation")
+        self.assertEqual(task_owner["trace_id"], "restore-owner-cache-trace")
+
+    def test_task_status_recovered_result_creates_trace_step(self):
+        AICallLog.objects.create(
+            user=self.user,
+            task_id="trace-recovered-task-id",
+            trace_id="trace-recovered-trace",
+            conversation_id="trace-recovered-conversation",
+            prompt="恢复 trace 测试",
+            response="恢复 trace 回答",
+            success=True,
+            model_name="deepseek",
+        )
+
+        response = self.client.get("/api/logs/task/trace-recovered-task-id/")
+
+        self.assertEqual(response.status_code, 200)
+
+        recovered_step = AiTraceStepLog.objects.filter(
+            trace_id="trace-recovered-trace",
+            step="task_recovered",
+        ).first()
+
+        self.assertIsNotNone(recovered_step)
+        self.assertTrue(recovered_step.success)
+        self.assertEqual(recovered_step.detail["task_id"], "trace-recovered-task-id")
+        self.assertEqual(recovered_step.detail["source"], "AICallLog")
+        self.assertTrue(recovered_step.detail["restored_owner_cache"])
+
+    def test_task_status_recovered_result_creates_trace_step_once(self):
+        AICallLog.objects.create(
+            user=self.user,
+            task_id="trace-recovered-once-task-id",
+            trace_id="trace-recovered-once-trace",
+            conversation_id="trace-recovered-once-conversation",
+            prompt="恢复 trace 只记录一次测试",
+            response="恢复 trace 回答",
+            success=True,
+            model_name="deepseek",
+        )
+
+        self.client.get("/api/logs/task/trace-recovered-once-task-id/")
+
+        cache.delete("ai_task_owner:trace-recovered-once-task-id")
+
+        self.client.get("/api/logs/task/trace-recovered-once-task-id/")
+
+        recovered_count = AiTraceStepLog.objects.filter(
+            trace_id="trace-recovered-once-trace",
+            step="task_recovered",
+        ).count()
+
+        self.assertEqual(recovered_count, 1)
+
+    @override_settings(AI_TASK_RECOVERED_OWNER_CACHE_SECONDS=123)
+    @patch("ai_log.views.cache.set")
+    def test_task_status_recovered_result_uses_recovered_cache_timeout(self, mock_cache_set):
+        AICallLog.objects.create(
+            user=self.user,
+            task_id="recovered-cache-timeout-task-id",
+            trace_id="recovered-cache-timeout-trace",
+            conversation_id="recovered-cache-timeout-conversation",
+            prompt="恢复缓存时间测试",
+            response="恢复缓存时间回答",
+            success=True,
+            model_name="deepseek",
+        )
+
+        response = self.client.get("/api/logs/task/recovered-cache-timeout-task-id/")
+
+        self.assertEqual(response.status_code, 200)
+
+        mock_cache_set.assert_called_with(
+            "ai_task_owner:recovered-cache-timeout-task-id",
+            {
+                "user_id": self.user.id,
+                "conversation_id": "recovered-cache-timeout-conversation",
+                "trace_id": "recovered-cache-timeout-trace",
+            },
+            timeout=123,
+        )
 
 class TaskStatusPermissionTests(TestCase):
     def setUp(self):
