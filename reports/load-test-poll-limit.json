@@ -1,0 +1,18 @@
+{
+  "created_at": "2026-09-11T17:58:15",
+  "base_url": "http://127.0.0.1:8000",
+  "mode": "poll-task",
+  "total": 130,
+  "workers": 20,
+  "same_request_id": false,
+  "status_counts": {
+    "200": 120,
+    "429": 10
+  },
+  "avg_ms": 232.46,
+  "p95_ms": 299.13,
+  "unique_task_ids": 1,
+  "task_id_samples": [
+    "e578fbef-f77a-48d5-a1e5-b9234871d339"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "created_at": "2026-09-11T17:57:47",
+  "base_url": "http://127.0.0.1:8000",
+  "mode": "submit-task",
+  "total": 30,
+  "workers": 10,
+  "same_request_id": false,
+  "status_counts": {
+    "429": 26,
+    "200": 4
+  },
+  "avg_ms": 96.94,
+  "p95_ms": 153.93,
+  "unique_task_ids": 4,
+  "task_id_samples": [
+    "e578fbef-f77a-48d5-a1e5-b9234871d339",
+    "a194003b-b8b1-417a-918c-84e33ad2d312",
+    "117b6b02-b5b2-470e-aa53-917a8b9db99a",
+    "2997a004-9d88-4e6a-9c68-2c400907f55e"
+  ]
+}

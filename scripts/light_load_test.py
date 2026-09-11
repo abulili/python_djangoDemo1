@@ -5,6 +5,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
+import json
+from pathlib import Path
+from datetime import datetime
+
 # 同一个 request_id python scripts\light_load_test.py --username 你的用户名 --password 你的密码 --total 20 --workers 5 --same-request-id
 # 再跑“不同 request_id”模式： python scripts\light_load_test.py --username 你的用户名 --password 你的密码 --total 30 --workers 10
 
@@ -78,7 +82,7 @@ def poll_task(base_url, token, task_id):
         "body": data,
     }
 
-def summarize(results):
+def summarize(results, args):
     # 汇总结果
     status_counts = {}
     durations = []
@@ -97,12 +101,39 @@ def summarize(results):
     p95_index = max(0, min(p95_index, len(durations_sorted) - 1))
 
     task_ids = [item["task_id"] for item in results if item["task_id"]]
+    avg_ms = round(statistics.mean(durations), 2)
+    p95_ms = round(durations_sorted[p95_index], 2)
+    unique_task_ids = len(set(task_ids))
+    task_id_samples = list(dict.fromkeys(task_ids))[:5]
 
     print("status_counts:", status_counts) # 不同状态码各有多少个
-    print("avg_ms:", round(statistics.mean(durations), 2))
-    print("p95_ms:", round(durations_sorted[p95_index], 2)) # 95% 请求以内的耗时
-    print("unique_task_ids:", len(set(task_ids))) # 一共创建/返回了多少个不同 task_id
-    print("task_id_samples:", list(dict.fromkeys(task_ids))[:5]) # 展示几个 task_id 样例
+    print("avg_ms:",avg_ms)
+    print("p95_ms:", p95_ms) # 95% 请求以内的耗时
+    print("unique_task_ids:", unique_task_ids) # 一共创建/返回了多少个不同 task_id
+    print("task_id_samples:", task_id_samples) # 展示几个 task_id 样例
+
+    report = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "base_url": args.base_url,
+        "mode": args.mode,
+        "total": args.total,
+        "workers": args.workers,
+        "same_request_id": args.same_request_id,
+        "status_counts": dict(status_counts),
+        "avg_ms": avg_ms,
+        "p95_ms": p95_ms,
+        "unique_task_ids": unique_task_ids,
+        "task_id_samples": task_id_samples,
+    }
+
+    if args.report_file:
+        report_path = Path(args.report_file)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print("report_file:", str(report_path))
 
 
 def main():
@@ -116,6 +147,8 @@ def main():
 
     parser.add_argument("--mode", choices=["submit-task", "poll-task"], default="submit-task")
     parser.add_argument("--task-id")
+
+    parser.add_argument("--report-file", default="", help="保存压测报告 JSON 的路径")
 
     args = parser.parse_args()
 
@@ -142,7 +175,7 @@ def main():
         for future in as_completed(futures):
             results.append(future.result())
 
-    summarize(results)
+    summarize(results, args)
 
 
 if __name__ == "__main__":

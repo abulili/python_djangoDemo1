@@ -1,0 +1,17 @@
+{
+  "created_at": "2026-09-11T17:57:21",
+  "base_url": "http://127.0.0.1:8000",
+  "mode": "submit-task",
+  "total": 20,
+  "workers": 5,
+  "same_request_id": true,
+  "status_counts": {
+    "200": 20
+  },
+  "avg_ms": 63.21,
+  "p95_ms": 157.89,
+  "unique_task_ids": 1,
+  "task_id_samples": [
+    "d7712fe0-4f83-4a39-952a-d4dad1bd4116"
+  ]
+}
