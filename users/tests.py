@@ -207,4 +207,74 @@ class SingleSessionLoginTests(TestCase):
 
         self.assertEqual(refresh_response.status_code, 401)
 
+class LoginEventApiTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="normal_login_user",
+            password="123456",
+        )
+        self.admin = User.objects.create_superuser(
+            username="admin_login_user",
+            password="123456",
+            email="admin@example.com",
+        )
+        self.client = APIClient()
 
+        LoginEvent.objects.create(
+            user=self.user,
+            ip_address="127.0.0.1",
+            user_agent="normal-browser",
+            token_version=1,
+            success=True,
+            reason="login_success",
+        )
+        LoginEvent.objects.create(
+            user=self.admin,
+            ip_address="8.8.8.8",
+            user_agent="admin-browser",
+            token_version=1,
+            success=True,
+            reason="login_success",
+        )
+
+    def test_normal_user_cannot_query_login_events(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get("/api/users/login-events/")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_query_login_events(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/users/login-events/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
+
+    def test_admin_can_filter_login_events_by_username(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/users/login-events/?username=normal")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["username"], "normal_login_user")
+
+    def test_admin_can_filter_login_events_by_success(self):
+        LoginEvent.objects.create(
+            user=self.user,
+            ip_address="127.0.0.2",
+            user_agent="failed-browser",
+            token_version=1,
+            success=False,
+            reason="login_failed",
+        )
+
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/users/login-events/?success=false")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["reason"], "login_failed")

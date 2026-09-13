@@ -9,7 +9,11 @@ from rest_framework.authentication import SessionAuthentication, BasicAuthentica
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .serializers import SingleSessionTokenObtainPairSerializer, SingleSessionTokenRefreshSerializer
 from django.utils import timezone
-from .models import UserProfile
+from .models import UserProfile, LoginEvent
+
+from rest_framework import viewsets
+from rest_framework.permissions import IsAdminUser
+from .serializers import LoginEventSerializer
 
 # Create your views here.
 class UserRegisterView(APIView):
@@ -57,4 +61,30 @@ class LogoutView(APIView):
             "message": "退出登录成功",
             "data": None,
         }, status=status.HTTP_200_OK)
+
+class LoginEventViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = LoginEventSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        queryset = LoginEvent.objects.select_related("user").all()
+
+        user_id = self.request.query_params.get("user_id")
+        username = self.request.query_params.get("username")
+        ip_address = self.request.query_params.get("ip_address")
+        success = self.request.query_params.get("success")
+
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+
+        if username:
+            queryset = queryset.filter(user__username__icontains=username)
+
+        if ip_address:
+            queryset = queryset.filter(ip_address=ip_address)
+
+        if success in ["true", "false"]:
+            queryset = queryset.filter(success=success == "true")
+
+        return queryset
 

@@ -8,7 +8,7 @@ from rest_framework.routers import DefaultRouter
 from ai_log.views import (AICallLogViewSet, PromptTemplateViewSet, MyCustomAPIView, health_check, KnowledgeDocumentViewSet, AiTraceStepLogViewSet)
 # from rest_framework_simplejwt.views import TokenObtainPairView,TokenRefreshView
 from rest_framework_simplejwt.views import TokenRefreshView
-from users.views import SingleSessionTokenObtainPairView, SingleSessionTokenRefreshView
+from users.views import (SingleSessionTokenObtainPairView, SingleSessionTokenRefreshView, LoginEventViewSet)
 
 
 def handler404(request, exception):
@@ -32,6 +32,7 @@ router.register(r'logs', AICallLogViewSet, basename='log')
 router.register(r'prompt-templates', PromptTemplateViewSet, basename='prompt-template')
 router.register(r'knowledge-documents', KnowledgeDocumentViewSet, basename='knowledge-document')
 router.register(r"ai-trace-step-logs", AiTraceStepLogViewSet, basename="rag-trace-log")
+# router.register(r'login-events', LoginEventViewSet, basename='login-event')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

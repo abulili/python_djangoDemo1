@@ -148,6 +148,23 @@ class SingleSessionTokenRefreshSerializer(TokenRefreshSerializer):
 
         return super().validate(attrs)
 
-    
+class LoginEventSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+
+    class Meta:
+        model = LoginEvent
+        fields = [
+            "id",
+            "user",
+            "username",
+            "ip_address",
+            "user_agent",
+            "token_version",
+            "success",
+            "reason",
+            "created_at",
+        ]
+        read_only_fields = fields
+
 
         
