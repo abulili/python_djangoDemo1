@@ -34,6 +34,9 @@ from celery.exceptions import Retry, SoftTimeLimitExceeded
 from django.utils import timezone
 from datetime import timedelta
 
+from ai_log.notifications.feishu import AINotificationContext, should_notify_ai_call, send_feishu_ai_notification
+from unittest.mock import Mock
+
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
         # 测文档切片
@@ -1026,6 +1029,7 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(step_names, [
             "task_start",
             "call_model_start",
+            "notify_feishu",
             "task_done",
         ])
 
@@ -1079,6 +1083,7 @@ class AiTraceStepLogApiTests(TestCase):
         self.assertEqual(step_names, [
             "task_start",
             "call_model_start",
+            "notify_feishu",
             "task_failed",
         ])
 
@@ -1574,7 +1579,239 @@ class AiTraceStepLogApiTests(TestCase):
 
         self.assertIsNotNone(retry_step)
         self.assertEqual(retry_step.detail["countdown"], 10)
-        
+    
+    @patch("ai_log.tasks.send_feishu_ai_notification")
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_records_feishu_notification_when_success(
+        self,
+        mock_call_ai_service,
+        mock_send_feishu,
+    ):
+        mock_call_ai_service.return_value = ({
+            "reply": "AI 成功回答",
+            "duration": 1.23,
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "cost": 0.001,
+        }, True)
+        mock_send_feishu.return_value = {
+            "sent": True,
+            "response": {"code": 0, "msg": "success"},
+        }
+
+        result = call_ai_task4.apply(args=[
+            "测试飞书成功通知",
+            self.user.id,
+            "deepseek",
+            "feishu-success-conversation",
+            None,
+            None,
+            "feishu-success-trace",
+        ]).get()
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(mock_send_feishu.call_count, 1)
+
+        notify_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-success-trace",
+            step="notify_feishu",
+        )
+        self.assertTrue(notify_log.success)
+        self.assertEqual(notify_log.detail["sent"], True)
+
+    @patch("ai_log.tasks.send_feishu_ai_notification")
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_records_feishu_notification_when_service_failed(
+        self,
+        mock_call_ai_service,
+        mock_send_feishu,
+    ):
+        mock_call_ai_service.return_value = ({
+            "reply": "模型返回失败",
+            "duration": 2.5,
+            "prompt_tokens": 5,
+            "completion_tokens": 0,
+            "total_tokens": 5,
+            "cost": 0.0005,
+        }, False)
+        mock_send_feishu.return_value = {
+            "sent": True,
+            "response": {"code": 0, "msg": "success"},
+        }
+
+        result = call_ai_task4.apply(args=[
+            "测试飞书失败通知",
+            self.user.id,
+            "deepseek",
+            "feishu-failed-conversation",
+            None,
+            None,
+            "feishu-failed-trace",
+        ]).get()
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(mock_send_feishu.call_count, 1)
+
+        notify_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-failed-trace",
+            step="notify_feishu",
+        )
+        self.assertTrue(notify_log.success)
+        self.assertEqual(notify_log.detail["sent"], True)
+
+        task_failed_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-failed-trace",
+            step="task_failed",
+        )
+        self.assertFalse(task_failed_log.success)
+
+    @patch("ai_log.tasks.send_feishu_ai_notification")
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_records_feishu_notification_when_soft_timeout(
+        self,
+        mock_call_ai_service,
+        mock_send_feishu,
+    ):
+        mock_call_ai_service.side_effect = SoftTimeLimitExceeded()
+        mock_send_feishu.return_value = {
+            "sent": True,
+            "response": {"code": 0, "msg": "success"},
+        }
+
+        result = call_ai_task4.apply(args=[
+            "测试飞书超时通知",
+            self.user.id,
+            "deepseek",
+            "feishu-timeout-conversation",
+            None,
+            None,
+            "feishu-timeout-trace",
+        ]).get()
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "AI任务执行超时")
+        self.assertEqual(mock_send_feishu.call_count, 1)
+
+        notify_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-timeout-trace",
+            step="notify_feishu",
+        )
+        self.assertTrue(notify_log.success)
+        self.assertEqual(notify_log.detail["sent"], True)
+
+        task_failed_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-timeout-trace",
+            step="task_failed",
+        )
+        self.assertEqual(task_failed_log.detail["reason"], "soft_time_limit_exceeded")
+
+    @patch("ai_log.tasks.send_feishu_ai_notification")
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_records_feishu_notification_when_non_retryable_exception(
+        self,
+        mock_call_ai_service,
+        mock_send_feishu,
+    ):
+        mock_call_ai_service.side_effect = Exception("401 unauthorized")
+        mock_send_feishu.return_value = {
+            "sent": True,
+            "response": {"code": 0, "msg": "success"},
+        }
+
+        result = call_ai_task4.apply(args=[
+            "测试飞书不可重试异常通知",
+            self.user.id,
+            "deepseek",
+            "feishu-exception-conversation",
+            None,
+            None,
+            "feishu-exception-trace",
+        ]).get()
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "401 unauthorized")
+        self.assertEqual(mock_send_feishu.call_count, 1)
+
+        step_names = list(
+            AiTraceStepLog.objects.filter(
+                user=self.user,
+                trace_id="feishu-exception-trace",
+            ).order_by("id").values_list("step", flat=True)
+        )
+
+        self.assertEqual(step_names, [
+            "task_start",
+            "call_model_start",
+            "task_failed",
+            "notify_feishu",
+        ])
+
+        notify_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-exception-trace",
+            step="notify_feishu",
+        )
+        self.assertTrue(notify_log.success)
+        self.assertEqual(notify_log.detail["sent"], True)
+
+        task_failed_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-exception-trace",
+            step="task_failed",
+        )
+        self.assertFalse(task_failed_log.success)
+        self.assertEqual(task_failed_log.detail["reason"], "non_retryable_error")
+
+    @patch("ai_log.tasks.send_feishu_ai_notification")
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_still_success_when_feishu_notification_raises_exception(
+        self,
+        mock_call_ai_service,
+        mock_send_feishu,
+    ):
+        mock_call_ai_service.return_value = ({
+            "reply": "AI 正常回答",
+            "duration": 1.0,
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "cost": 0.001,
+        }, True)
+        mock_send_feishu.side_effect = Exception("feishu timeout")
+
+        result = call_ai_task4.apply(args=[
+            "测试飞书通知抛异常不影响主任务",
+            self.user.id,
+            "deepseek",
+            "feishu-raise-but-task-success-conversation",
+            None,
+            None,
+            "feishu-raise-but-task-success-trace",
+        ]).get()
+
+        self.assertEqual(result["status"], "success")
+
+        notify_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-raise-but-task-success-trace",
+            step="notify_feishu",
+        )
+        self.assertFalse(notify_log.success)
+        self.assertEqual(notify_log.detail["reason"], "notification_exception")
+        self.assertEqual(notify_log.detail["error"], "feishu timeout")
+
+        task_done_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-raise-but-task-success-trace",
+            step="task_done",
+        )
+        self.assertTrue(task_done_log.success)
 
 # 测@throttle_classes([AICallThrottle])
 # 在当前测试类里临时把限流改成 2/minute
@@ -2898,6 +3135,253 @@ class ObservabilitySummaryTests(TestCase):
         self.assertEqual(data["timeout_count"], 1)
         self.assertEqual(data["failed_step_count"], 2)
 
+class FeishuNotificationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="ragtraceuser", password="123456")
+        self.other_user = User.objects.create_user(username="otherragtraceuser", password="123456")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @override_settings(AI_NOTIFY_ENABLED=False)
+    def test_should_not_notify_when_disabled(self):
+        ctx = AINotificationContext(
+            success=False,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="测试",
+        )
+
+        self.assertFalse(should_notify_ai_call(ctx))
+
+    @override_settings(AI_NOTIFY_ENABLED=True, AI_NOTIFY_ON_SUCCESS=False)
+    def test_should_notify_when_failed(self):
+        ctx = AINotificationContext(
+            success=False,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="测试",
+        )
+
+        self.assertTrue(should_notify_ai_call(ctx))
 
 
-    
+    @override_settings(AI_NOTIFY_ENABLED=True, AI_NOTIFY_ON_SUCCESS=True)
+    def test_should_notify_when_success_enabled(self):
+        ctx = AINotificationContext(
+            success=True,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="测试",
+        )
+
+        self.assertTrue(should_notify_ai_call(ctx))
+
+
+    @override_settings(
+        AI_NOTIFY_ENABLED=True,
+        AI_NOTIFY_ON_SUCCESS=False,
+        AI_NOTIFY_SLOW_SECONDS=5,
+    )
+    def test_should_notify_when_slow_request(self):
+        ctx = AINotificationContext(
+            success=True,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="测试",
+            duration=6,
+        )
+
+        self.assertTrue(should_notify_ai_call(ctx))
+
+
+    @override_settings(
+        AI_NOTIFY_ENABLED=True,
+        AI_NOTIFY_ON_SUCCESS=False,
+        AI_NOTIFY_HIGH_COST=0.01,
+    )
+    def test_should_notify_when_high_cost(self):
+        ctx = AINotificationContext(
+            success=True,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="测试",
+            cost=0.02,
+        )
+
+        self.assertTrue(should_notify_ai_call(ctx))
+
+
+    @override_settings(
+        AI_NOTIFY_ENABLED=True,
+        AI_NOTIFY_ON_SUCCESS=False,
+        AI_NOTIFY_SLOW_SECONDS=5,
+        AI_NOTIFY_HIGH_COST=0.01,
+    )
+    def test_should_not_notify_when_success_normal(self):
+        ctx = AINotificationContext(
+            success=True,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="测试",
+            duration=1,
+            cost=0.001,
+        )
+
+        self.assertFalse(should_notify_ai_call(ctx))
+
+    @override_settings(
+    AI_NOTIFY_ENABLED=True,
+    AI_NOTIFY_ON_SUCCESS=True,
+    FEISHU_BOT_WEBHOOK="https://example.com/feishu-webhook",
+)
+    @patch("ai_log.notifications.feishu.requests.post")
+    def test_send_feishu_ai_notification_sends_webhook(self, mock_post):
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "code": 0,
+            "msg": "success",
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = send_feishu_ai_notification(AINotificationContext(
+            success=True,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="测试飞书 webhook",
+            response="测试回答",
+            trace_id="feishu-webhook-trace",
+            conversation_id="feishu-webhook-conversation",
+            duration=1.2,
+            total_tokens=30,
+            cost=0.001,
+            log_id=1,
+        ))
+
+        self.assertTrue(result["sent"])
+        self.assertEqual(mock_post.call_count, 1)
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["msg_type"], "text")
+        self.assertIn("AI通知", payload["content"]["text"])
+        self.assertIn("feishu-webhook-trace", payload["content"]["text"])
+
+    @override_settings(AI_NOTIFY_ENABLED=True, AI_NOTIFY_ON_SUCCESS=False)
+    @patch("ai_log.notifications.feishu.requests.post")
+    def test_send_feishu_ai_notification_skips_by_rule(self, mock_post):
+        result = send_feishu_ai_notification(AINotificationContext(
+            success=True,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="普通成功请求",
+            duration=1,
+            cost=0.001,
+        ))
+
+        self.assertEqual(result["sent"], False)
+        self.assertEqual(result["reason"], "rule_skipped")
+        self.assertEqual(mock_post.call_count, 0)
+
+
+    @override_settings(
+        AI_NOTIFY_ENABLED=True,
+        AI_NOTIFY_ON_SUCCESS=True,
+        FEISHU_BOT_WEBHOOK="",
+    )
+    @patch("ai_log.notifications.feishu.requests.post")
+    def test_send_feishu_ai_notification_skips_without_webhook(self, mock_post):
+        result = send_feishu_ai_notification(AINotificationContext(
+            success=True,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="缺少 webhook",
+        ))
+
+        self.assertEqual(result["sent"], False)
+        self.assertEqual(result["reason"], "missing_webhook")
+        self.assertEqual(mock_post.call_count, 0)
+
+    @override_settings(AI_NOTIFY_ENABLED=True, AI_NOTIFY_ON_SUCCESS=False)
+    @patch("ai_log.notifications.feishu.requests.post")
+    def test_send_feishu_ai_notification_skips_by_rule(self, mock_post):
+        result = send_feishu_ai_notification(AINotificationContext(
+            success=True,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="普通成功请求",
+            duration=1,
+            cost=0.001,
+        ))
+
+        self.assertEqual(result["sent"], False)
+        self.assertEqual(result["reason"], "rule_skipped")
+        self.assertEqual(mock_post.call_count, 0)
+
+
+    @override_settings(
+        AI_NOTIFY_ENABLED=True,
+        AI_NOTIFY_ON_SUCCESS=True,
+        FEISHU_BOT_WEBHOOK="",
+    )
+    @patch("ai_log.notifications.feishu.requests.post")
+    def test_send_feishu_ai_notification_skips_without_webhook(self, mock_post):
+        result = send_feishu_ai_notification(AINotificationContext(
+            success=True,
+            user_id=self.user.id,
+            model_name="deepseek",
+            prompt="缺少 webhook",
+        ))
+
+        self.assertEqual(result["sent"], False)
+        self.assertEqual(result["reason"], "missing_webhook")
+        self.assertEqual(mock_post.call_count, 0)
+
+    @patch("ai_log.tasks.send_feishu_ai_notification")
+    @patch("ai_log.tasks.call_ai_service")
+    def test_call_ai_task4_still_success_when_feishu_notification_failed(
+        self,
+        mock_call_ai_service,
+        mock_send_feishu,
+    ):
+        mock_call_ai_service.return_value = ({
+            "reply": "AI 正常回答",
+            "duration": 1.0,
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "cost": 0.001,
+        }, True)
+        mock_send_feishu.return_value = {
+            "sent": False,
+            "reason": "request_failed",
+            "error": "timeout",
+        }
+
+        result = call_ai_task4.apply(args=[
+            "测试飞书失败不影响主任务",
+            self.user.id,
+            "deepseek",
+            "feishu-failed-but-task-success-conversation",
+            None,
+            None,
+            "feishu-failed-but-task-success-trace",
+        ]).get()
+
+        self.assertEqual(result["status"], "success")
+
+        notify_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-failed-but-task-success-trace",
+            step="notify_feishu",
+        )
+        self.assertFalse(notify_log.success)
+        self.assertEqual(notify_log.detail["reason"], "request_failed")
+
+        task_done_log = AiTraceStepLog.objects.get(
+            user=self.user,
+            trace_id="feishu-failed-but-task-success-trace",
+            step="task_done",
+        )
+        self.assertTrue(task_done_log.success)
+
+        

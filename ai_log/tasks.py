@@ -200,6 +200,61 @@ def get_ai_retry_countdown(error_message):
 
     return 2
 
+# * 在这里的意思是：后面的参数必须写参数名传入，不能按位置传
+def record_feishu_notification(
+    *,
+    user,
+    trace_id,
+    conversation_id,
+    prompt,
+    success,
+    model_name,
+    response="",
+    error_message="",
+    duration=0.0,
+    total_tokens=0,
+    cost=0.0,
+    log_id=None,
+):
+    try:
+        notify_result = send_feishu_ai_notification(AINotificationContext(
+            success=success,
+            user_id=user.id,
+            model_name=model_name,
+            prompt=prompt,
+            response=response,
+            error_message=error_message,
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            duration=duration,
+            total_tokens=total_tokens,
+            cost=cost,
+            log_id=log_id,
+        ))
+    except Exception as e:
+        logger.exception("发送飞书 AI 通知失败")
+        notify_result = {
+            "sent": False,
+            "reason": "notification_exception",
+            "error": str(e),
+        }
+
+    try:
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            step="notify_feishu",
+            query=prompt,
+            success=notify_result.get("sent", False) or notify_result.get("reason") == "rule_skipped",
+            error_message="" if notify_result.get("sent", False) else notify_result.get("reason", ""),
+            detail=notify_result,
+        )
+    except Exception as e:
+        logger.exception("记录飞书通知 trace 失败")
+
+    return notify_result
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=2, soft_time_limit=240,
     time_limit=300) # self--Celery task 对象 
     # soft_time_limit=240：跑到 240 秒时，Celery 先给任务一个“软提醒/软中断” time_limit=300：跑到 300 秒时，Celery 强制终止任务
@@ -266,29 +321,19 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
         )
 
         # 飞书
-        notify_result = send_feishu_ai_notification(AINotificationContext(
-            success=success,
-            user_id=user.id,
-            model_name=model_key or "deepseek",
+        record_feishu_notification(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
             prompt=prompt,
+            success=success,
+            model_name=model_key or "deepseek",
             response=result.get("reply", ""),
             error_message="" if success else result.get("reply", "AI调用失败"),
-            trace_id=trace_id,
-            conversation_id=conversation_id or "",
             duration=task_duration,
             total_tokens=result.get("total_tokens", 0),
             cost=result.get("cost", 0.0),
             log_id=log.id,
-        ))
-
-        AiTraceStepLog.objects.create(
-            user=user,
-            trace_id=trace_id,
-            conversation_id=conversation_id or "",
-            step="notify_feishu",
-            query=prompt,
-            success=notify_result.get("sent", False) or notify_result.get("reason") == "rule_skipped",
-            detail=notify_result,
         )
 
         AiTraceStepLog.objects.create(
@@ -351,7 +396,7 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
             },
         )
 
-        AICallLog.objects.create(
+        log = AICallLog.objects.create(
             conversation_id=conversation_id or "",
             prompt=prompt,
             response=error_message,
@@ -361,6 +406,21 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
             model_name=model_key or "deepseek",
             trace_id=trace_id,
             task_id=self.request.id or "",
+        )
+
+        record_feishu_notification(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            prompt=prompt,
+            success=False,
+            model_name=model_key or "deepseek",
+            response="",
+            error_message=error_message,
+            duration=duration,
+            total_tokens=0,
+            cost=0.0,
+            log_id=log.id,
         )
 
         logger.exception("call_ai_task4 执行超时")
@@ -416,7 +476,7 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
             },
         )
 
-        AICallLog.objects.create(
+        log = AICallLog.objects.create(
             conversation_id=conversation_id or "",
             prompt=prompt,
             response=error_message,
@@ -425,6 +485,22 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
             user=user,
             model_name=model_key or "deepseek",
             trace_id=trace_id,
+            task_id=self.request.id or "",
+        )
+
+        record_feishu_notification(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            prompt=prompt,
+            success=False,
+            model_name=model_key or "deepseek",
+            response="",
+            error_message=error_message,
+            duration=duration,
+            total_tokens=0,
+            cost=0.0,
+            log_id=log.id,
         )
 
         logger.exception("call_ai_task4 调用失败")

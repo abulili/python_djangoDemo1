@@ -37,7 +37,7 @@ def should_notify_ai_call(ctx: AINotificationContext) -> bool:
     return False
 
 # 真正调用飞书 Webhook 发消息
-def send_feishu_ai_notification(ctx: AINotificationContext) -> None:
+def send_feishu_ai_notification(ctx: AINotificationContext) -> dict:
     if not should_notify_ai_call(ctx):
         return {"sent": False, "reason": "rule_skipped"}
     if not settings.FEISHU_BOT_WEBHOOK:

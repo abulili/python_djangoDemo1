@@ -1317,6 +1317,9 @@ class AICallLogViewSet(viewsets.ModelViewSet):
                 data["error"] = recovered_log.response or "AI调用失败"
             return success_response(data)
 
+        if task_owner.get("user_id") != request.user.id and not request.user.is_superuser:
+            return error_response("您没有权限查看该任务的结果", code=404)
+
         task = AsyncResult(task_id)
         # 用 state 判断任务状态
         status_key = task.state
