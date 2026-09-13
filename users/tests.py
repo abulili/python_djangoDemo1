@@ -1,12 +1,25 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.contrib.auth.models import User
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import UserProfile
+from .models import UserProfile, LoginEvent
 
 # Create your tests here.
-
+@override_settings(
+    REST_FRAMEWORK={
+        "DEFAULT_AUTHENTICATION_CLASSES": (
+            "users.authentication.SingleSessionJWTAuthentication",
+        ),
+        "DEFAULT_THROTTLE_CLASSES": [],
+        "DEFAULT_THROTTLE_RATES": {
+            "user": "1000/minute",
+            "anon": "1000/minute",
+            "ai_call": "1000/minute",
+            "task_status": "1000/minute",
+        },
+    }
+)
 class SingleSessionLoginTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
@@ -98,6 +111,27 @@ class SingleSessionLoginTests(TestCase):
 
         profile = UserProfile.objects.get(user=self.user)
         self.assertEqual(profile.last_login_ip, "8.8.8.8")
+
+    def test_login_creates_login_event(self):
+        response = self.client.post(
+            "/api/token/",
+            {
+                "username": "single_login_user",
+                "password": "123456",
+            },
+            format="json",
+            REMOTE_ADDR="127.0.0.1",
+            HTTP_USER_AGENT="test-browser",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        event = LoginEvent.objects.get(user=self.user)
+        self.assertEqual(event.ip_address, "127.0.0.1")
+        self.assertEqual(event.user_agent, "test-browser")
+        self.assertEqual(event.token_version, 1)
+        self.assertTrue(event.success)
+        self.assertEqual(event.reason, "login_success")
 
     def test_old_refresh_token_invalid_after_second_login(self):
         first_login = self.client.post("/api/token/", {

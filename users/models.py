@@ -29,3 +29,22 @@ class UserProfile(models.Model):
         # created：是否是创建操作，这里是指创建 User 实例
         if created: # 老用户
             UserProfile.objects.create(user=instance)
+
+class LoginEvent(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='login_events',
+    )
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True, default="")
+    token_version = models.PositiveIntegerField(default=0)
+    success = models.BooleanField(default=True)
+    reason = models.CharField(max_length=100, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user_id} success={self.success} ip={self.ip_address}"

@@ -4,9 +4,11 @@ from rest_framework import serializers
 
 from django.utils import timezone
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
-from .models import UserProfile
+from .models import UserProfile, LoginEvent
 from rest_framework_simplejwt.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.tokens import RefreshToken
+from .utils import get_client_ip
+
 
 class UserRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[
@@ -83,20 +85,36 @@ class SingleSessionTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         profile.token_version += 1
 
+        ip_address = None
+        user_agent = ""
+
         if request:
             # 用户浏览器 -> Nginx -> Django Nginx 会把用户真实 IP 放到HTTP_X_FORWARDED_FOR
-            forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-            if forwarded_for:
-                profile.last_login_ip = forwarded_for.split(',')[0].strip()
-            else:
-                # REMOTE_ADDR 可能是 Nginx 的 IP，不是用户真实 IP
-                profile.last_login_ip = request.META.get('REMOTE_ADDR')
+            # forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+            # if forwarded_for:
+            #     profile.last_login_ip = forwarded_for.split(',')[0].strip()
+            # else:
+            #     # REMOTE_ADDR 可能是 Nginx 的 IP，不是用户真实 IP
+            #     profile.last_login_ip = request.META.get('REMOTE_ADDR')
+            ip_address = get_client_ip(request)
+            user_agent = request.META.get("HTTP_USER_AGENT", "")
 
-            profile.last_login_user_agent = request.META.get('HTTP_USER_AGENT', '')
+            profile.last_login_ip = ip_address
+            profile.last_login_user_agent = user_agent
 
         profile.last_login_at = timezone.now()
+
+
         profile.save(
             update_fields=['token_version', 'last_login_ip', 'last_login_user_agent', 'last_login_at']
+        )
+        LoginEvent.objects.create(
+            user=self.user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            token_version=profile.token_version,
+            success=True,
+            reason="login_success",
         )
 
         refresh = self.get_token(self.user)
