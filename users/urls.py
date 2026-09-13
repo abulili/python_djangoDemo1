@@ -1,8 +1,9 @@
-from django.urls import path
+from django.urls import path,include
 
 from .views import UserRegisterView, LogoutView, LoginEventViewSet
 
 from rest_framework.routers import DefaultRouter
+
 
 router = DefaultRouter()
 router.register(r'login-events', LoginEventViewSet, basename='login-event')
