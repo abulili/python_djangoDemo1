@@ -2,6 +2,12 @@ from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
+from django.utils import timezone
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
+from .models import UserProfile
+from rest_framework_simplejwt.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.tokens import RefreshToken
+
 class UserRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[
         validate_password
@@ -43,3 +49,87 @@ class UserRegisterSerializer(serializers.ModelSerializer):
             password=validated_data['password'],
         )
         return user
+
+class SingleSessionTokenObtainPairSerializer(TokenObtainPairSerializer):
+    # 生成 refresh token 时，往 token 里额外塞 token_version。
+    """
+    SimpleJWT的逻辑：
+    校验 username/password
+    生成 refresh/access token
+    返回给前端
+
+    1. 先调用 super().validate(attrs)，让 SimpleJWT 校验账号密码。
+    2. 找到当前用户 self.user。
+    3. 拿到或创建 UserProfile。
+    4. token_version + 1，表示这是一次新登录。
+    5. 记录 IP、User-Agent、登录时间。
+    6. 重新生成带 token_version 的 refresh/access。
+    7. 返回给前端。
+    """
+    @classmethod
+    def get_token(cls, user):
+        # cls 是 SingleSessionTokenObtainPairSerializer
+        # SimpleJWT 原本的 get_token 就是类方法，所以我们重写它时也要写 @classmethod
+        token = super().get_token(user)
+        profile,_ = UserProfile.objects.get_or_create(user=user)
+        token['token_version'] = profile.token_version
+        return token
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+
+        request = self.context.get("request")
+        profile, _ = UserProfile.objects.get_or_create(user=self.user)
+
+        profile.token_version += 1
+
+        if request:
+            # 用户浏览器 -> Nginx -> Django Nginx 会把用户真实 IP 放到HTTP_X_FORWARDED_FOR
+            forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+            if forwarded_for:
+                profile.last_login_ip = forwarded_for.split(',')[0].strip()
+            else:
+                # REMOTE_ADDR 可能是 Nginx 的 IP，不是用户真实 IP
+                profile.last_login_ip = request.META.get('REMOTE_ADDR')
+
+            profile.last_login_user_agent = request.META.get('HTTP_USER_AGENT', '')
+
+        profile.last_login_at = timezone.now()
+        profile.save(
+            update_fields=['token_version', 'last_login_ip', 'last_login_user_agent', 'last_login_at']
+        )
+
+        refresh = self.get_token(self.user)
+        data["refresh"] = str(refresh)
+        data["access"] = str(refresh.access_token)
+        return data
+
+class SingleSessionTokenRefreshSerializer(TokenRefreshSerializer):
+    def validate(self, attrs):
+        refresh = RefreshToken(attrs['refresh'])
+        
+        user_id = refresh.get("user_id")
+        token_version = refresh.get("token_version")
+
+        if token_version is None:
+            raise AuthenticationFailed("登录状态已失效，请重新登录")
+
+        try:
+            # 新用户注册时已经创建了UserProfile
+            profile = UserProfile.objects.get(user_id=user_id)
+        except UserProfile.DoesNotExist:
+            # 兜底：refresh token 里说有这个用户，但数据库里找不到对应的安全状态记录。
+            # 历史脏数据
+            # UserProfile 被误删
+            # token 是旧版本系统签发的
+            # token 是伪造/异常来源
+            raise AuthenticationFailed("登录状态已失效，请重新登录")
+
+        if token_version != profile.token_version: # 版本号的累加
+            raise AuthenticationFailed("账号已在其他设备登录，请重新登录")
+
+        return super().validate(attrs)
+
+    
+
+        

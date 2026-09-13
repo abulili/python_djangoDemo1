@@ -109,7 +109,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 REST_FRAMEWORK = {
     # 默认的认证方式，这里配置为 JWT 认证
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        # 'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'users.authentication.SingleSessionJWTAuthentication',
     ),
     # 自定义异常处理器，覆盖默认的异常处理，返回统一格式的错误响应
     'EXCEPTION_HANDLER': 'ai_log.exceptions.custom_exception_handler',

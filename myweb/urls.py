@@ -6,7 +6,9 @@ from django.urls import path, include
 from django.http import JsonResponse
 from rest_framework.routers import DefaultRouter
 from ai_log.views import (AICallLogViewSet, PromptTemplateViewSet, MyCustomAPIView, health_check, KnowledgeDocumentViewSet, AiTraceStepLogViewSet)
-from rest_framework_simplejwt.views import TokenObtainPairView,TokenRefreshView
+# from rest_framework_simplejwt.views import TokenObtainPairView,TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
+from users.views import SingleSessionTokenObtainPairView, SingleSessionTokenRefreshView
 
 def handler404(request, exception):
     return JsonResponse({
@@ -34,8 +36,9 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include(router.urls)),
     path('api/my-custom/', MyCustomAPIView.as_view()),
-    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    # path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/', SingleSessionTokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', SingleSessionTokenRefreshView.as_view(), name='token_refresh'),
     path('healthy/', health_check, name='health'),    
     # djang的应用命名空间机制 'users.urls' 会被 Django 解析为：users/urls.py
     # 等价写法（如果 urls 不在根目录）

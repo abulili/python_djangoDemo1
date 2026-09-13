@@ -6,6 +6,9 @@ from rest_framework.permissions import AllowAny
 from .serializers import UserRegisterSerializer
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication 
 
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from .serializers import SingleSessionTokenObtainPairSerializer, SingleSessionTokenRefreshSerializer
+
 # Create your views here.
 class UserRegisterView(APIView):
     # ✅ 关键：移除 JWT 认证，只保留 Session 认证
@@ -31,3 +34,10 @@ class UserRegisterView(APIView):
             'message': '注册失败',
             'data': serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
+
+class SingleSessionTokenObtainPairView(TokenObtainPairView):
+    serializer_class = SingleSessionTokenObtainPairSerializer
+
+class SingleSessionTokenRefreshView(TokenRefreshView):
+    serializer_class = SingleSessionTokenRefreshSerializer
+
