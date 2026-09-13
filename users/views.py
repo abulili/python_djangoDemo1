@@ -2,12 +2,14 @@ from django.shortcuts import render
 from rest_framework.views import APIView
 from rest_framework import status
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from .serializers import UserRegisterSerializer
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication 
 
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .serializers import SingleSessionTokenObtainPairSerializer, SingleSessionTokenRefreshSerializer
+from django.utils import timezone
+from .models import UserProfile
 
 # Create your views here.
 class UserRegisterView(APIView):
@@ -40,4 +42,19 @@ class SingleSessionTokenObtainPairView(TokenObtainPairView):
 
 class SingleSessionTokenRefreshView(TokenRefreshView):
     serializer_class = SingleSessionTokenRefreshSerializer
+
+class LogoutView(APIView):
+    # 这个接口必须登录后才能访问。
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, format=None):
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        profile.token_version += 1
+        profile.save(update_fields=["token_version"])
+
+        return Response({
+            "code": 200,
+            "message": "退出登录成功",
+            "data": None,
+        }, status=status.HTTP_200_OK)
 

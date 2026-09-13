@@ -133,4 +133,44 @@ class SingleSessionLoginTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("access", response.data)
 
+    def test_logout_invalidates_current_access_token(self):
+        login_response = self.client.post("/api/token/", {
+            "username": "single_login_user",
+            "password": "123456",
+        }, format="json")
+        self.assertEqual(login_response.status_code, 200)
+
+        access = login_response.data["access"]
+
+        auth_client = APIClient()
+        auth_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+
+        logout_response = auth_client.post("/api/users/logout/")
+        self.assertEqual(logout_response.status_code, 200)
+
+        old_response = auth_client.get("/api/logs/")
+        self.assertEqual(old_response.status_code, 401)
+
+    def test_logout_invalidates_current_refresh_token(self):
+        login_response = self.client.post("/api/token/", {
+            "username": "single_login_user",
+            "password": "123456",
+        }, format="json")
+        self.assertEqual(login_response.status_code, 200)
+
+        access = login_response.data["access"]
+        refresh = login_response.data["refresh"]
+
+        auth_client = APIClient()
+        auth_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+
+        logout_response = auth_client.post("/api/users/logout/")
+        self.assertEqual(logout_response.status_code, 200)
+
+        refresh_response = self.client.post("/api/token/refresh/", {
+            "refresh": refresh,
+        }, format="json")
+
+        self.assertEqual(refresh_response.status_code, 401)
+
 

@@ -10,6 +10,7 @@ from ai_log.views import (AICallLogViewSet, PromptTemplateViewSet, MyCustomAPIVi
 from rest_framework_simplejwt.views import TokenRefreshView
 from users.views import SingleSessionTokenObtainPairView, SingleSessionTokenRefreshView
 
+
 def handler404(request, exception):
     return JsonResponse({
         "code": 404,
