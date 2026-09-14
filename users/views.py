@@ -5,13 +5,13 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from .serializers import (
     UserRegisterSerializer,SingleSessionTokenObtainPairSerializer, SingleSessionTokenRefreshSerializer, 
-    LoginEventSerializer, ForceLogoutUsersSerializer, BanUsersSerializer
+    LoginEventSerializer, ForceLogoutUsersSerializer, BanUsersSerializer, IPBlockRulesSerializer
 )
 from django.utils import timezone
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication 
 
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .models import UserProfile, LoginEvent
+from .models import UserProfile, LoginEvent, IPBlockRule
 
 from rest_framework import viewsets
 from rest_framework.permissions import IsAdminUser
@@ -201,3 +201,32 @@ class UnbanUsersView(APIView):
                 ],
             },
         }, status=status.HTTP_200_OK)
+
+class IPBlockRulesViewSet(viewsets.ModelViewSet):
+    """
+    GET /api/users/ip-block-rules/
+    POST /api/users/ip-block-rules/
+    PATCH /api/users/ip-block-rules/{id}/
+    DELETE /api/users/ip-block-rules/{id}/
+    """
+    permission_classes = [IsAdminUser]
+    serializer_class = IPBlockRulesSerializer
+
+    def get_queryset(self):
+        # 查询所有 IPBlockRule，并且顺手把 blocked_by 这个管理员用户也一起查出来。因为 blocked_by 是外键
+        queryset = IPBlockRule.objects.select_related("blocked_by").all()
+
+        ip_address = self.request.query_params.get("ip_address")
+        is_active = self.request.query_params.get("is_active")
+
+        if ip_address:
+            queryset = queryset.filter(ip_address=ip_address)
+
+        if is_active in ["true", "false"]:
+            queryset = queryset.filter(is_active=is_active == "true")
+
+        return queryset
+
+    # 当前端 POST 创建 IPBlockRule 时，保存前自动把 blocked_by 设置成当前管理员。
+    def perform_create(self, serializer):
+        serializer.save(blocked_by=self.request.user)

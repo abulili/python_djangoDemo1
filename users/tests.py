@@ -3,7 +3,7 @@ from django.contrib.auth.models import User
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import UserProfile, LoginEvent
+from .models import UserProfile, LoginEvent, IPBlockRule
 from django.utils import timezone
 
 # Create your tests here.
@@ -521,6 +521,99 @@ class BanUsersTests(TestCase):
         }, format="json")
 
         self.assertEqual(response.status_code, 401)
+
+class IPBlockRuleTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(
+            username="ip_block_admin",
+            password="123456",
+            email="ip-block-admin@example.com",
+        )
+        self.user = User.objects.create_user(
+            username="ip_block_user",
+            password="123456",
+        )
+        self.client = APIClient()
+
+    def test_normal_user_cannot_create_ip_block_rule(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post("/api/users/ip-block-rules/", {
+            "ip_address": "8.8.8.8",
+            "reason": "异常请求",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_create_ip_block_rule(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post("/api/users/ip-block-rules/", {
+            "ip_address": "8.8.8.8",
+            "reason": "异常请求",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201)
+
+        rule = IPBlockRule.objects.get(ip_address="8.8.8.8")
+        self.assertTrue(rule.is_active)
+        self.assertEqual(rule.reason, "异常请求")
+        self.assertEqual(rule.blocked_by, self.admin)
+
+    def test_admin_can_filter_active_ip_block_rules(self):
+        IPBlockRule.objects.create(
+            ip_address="8.8.8.8",
+            reason="异常请求",
+            is_active=True,
+            blocked_by=self.admin,
+        )
+        IPBlockRule.objects.create(
+            ip_address="1.1.1.1",
+            reason="已解除",
+            is_active=False,
+            blocked_by=self.admin,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/users/ip-block-rules/?is_active=true")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["ip_address"], "8.8.8.8")
+
+    def test_blocked_ip_is_rejected_by_middleware(self):
+        IPBlockRule.objects.create(
+            ip_address="8.8.8.8",
+            reason="异常请求",
+            is_active=True,
+            blocked_by=self.admin,
+        )
+
+        response = self.client.get(
+            "/api/users/register/",
+            REMOTE_ADDR="8.8.8.8",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["message"], "当前 IP 已被限制访问")
+
+    def test_inactive_blocked_ip_is_allowed(self):
+        IPBlockRule.objects.create(
+            ip_address="8.8.8.8",
+            reason="已解除",
+            is_active=False,
+            blocked_by=self.admin,
+        )
+
+        response = self.client.get(
+            "/api/users/register/",
+            REMOTE_ADDR="8.8.8.8",
+        )
+
+        self.assertNotEqual(response.status_code, 403)
+
+
 
 
 

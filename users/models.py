@@ -52,3 +52,23 @@ class LoginEvent(models.Model):
 
     def __str__(self):
         return f"{self.user_id} success={self.success} ip={self.ip_address}"
+
+class IPBlockRule(models.Model):
+    ip_address = models.GenericIPAddressField(unique=True)
+    reason = models.CharField(max_length=255, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    blocked_at = models.DateTimeField(auto_now_add=True)
+    # 这条 IP 黑名单是谁创建的
+    blocked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_ip_block_rules",
+    )
+
+    class Meta:
+        ordering = ["-blocked_at"]
+
+    def __str__(self):
+        return f"{self.ip_address} reason={self.reason}"
