@@ -3,17 +3,23 @@ from rest_framework.views import APIView
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from .serializers import UserRegisterSerializer
+from .serializers import (
+    UserRegisterSerializer,SingleSessionTokenObtainPairSerializer, SingleSessionTokenRefreshSerializer, 
+    LoginEventSerializer, ForceLogoutUsersSerializer, BanUsersSerializer
+)
+from django.utils import timezone
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication 
 
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .serializers import SingleSessionTokenObtainPairSerializer, SingleSessionTokenRefreshSerializer
-from django.utils import timezone
 from .models import UserProfile, LoginEvent
 
 from rest_framework import viewsets
 from rest_framework.permissions import IsAdminUser
-from .serializers import LoginEventSerializer
+
+from django.db import transaction
+from django.contrib.auth.models import User
+
+from django.utils import timezone
 
 # Create your views here.
 class UserRegisterView(APIView):
@@ -88,3 +94,110 @@ class LoginEventViewSet(viewsets.ReadOnlyModelViewSet):
 
         return queryset
 
+class ForceLogoutUsersView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, format=None):
+        serializer = ForceLogoutUsersSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        user_ids = serializer.validated_data["user_ids"]
+
+        users = User.objects.filter(id__in=user_ids)
+        # users.values_list("id") --->  [(1,), (2,), (3,)]元组 ---> [1, 2, 3]flat=True
+        existing_user_ids = list(users.values_list("id", flat=True))
+
+        with transaction.atomic(): # 数据库事务
+            # 逐个退出登录，更新 token_version
+            for user in users:
+                profile, _ = UserProfile.objects.get_or_create(user=user)
+                profile.token_version += 1
+                profile.save(update_fields=["token_version"])
+
+        return Response({
+            "code": 200,
+            "message": "批量下线成功",
+            "data": {
+                "requested_count": len(user_ids),
+                "updated_count": len(existing_user_ids),
+                "updated_user_ids": existing_user_ids,
+                "missing_user_ids": [
+                    user_id for user_id in user_ids if user_id not in existing_user_ids
+                ],
+            },
+        }, status=status.HTTP_200_OK)
+
+class BanUsersView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, format=None):
+        serializer = BanUsersSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user_ids = serializer.validated_data["user_ids"]
+        reason = serializer.validated_data.get("ban_reason", "")
+        users = User.objects.filter(id__in=user_ids)
+        existing_user_ids = list(users.values_list("id", flat=True))
+
+        with transaction.atomic():
+            for user in users:
+                profile, _ = UserProfile.objects.get_or_create(user=user)
+                profile.is_banned = True
+                profile.ban_reason = reason
+                profile.banned_at = timezone.now()
+                profile.token_version += 1
+                profile.save(update_fields=[
+                    "is_banned",
+                    "ban_reason",
+                    "banned_at",
+                    "token_version",
+                ])
+
+        return Response({
+            "code": 200,
+            "message": "用户封禁成功",
+            "data": {
+                "requested_count": len(user_ids),
+                "updated_count": len(existing_user_ids),
+                "updated_user_ids": existing_user_ids,
+                "missing_user_ids": [
+                    user_id for user_id in user_ids if user_id not in existing_user_ids
+                ],
+            },
+        }, status=status.HTTP_200_OK)
+
+class UnbanUsersView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, format=None):
+        serializer = ForceLogoutUsersSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user_ids = serializer.validated_data["user_ids"]
+        users = User.objects.filter(id__in=user_ids)
+        existing_user_ids = list(users.values_list("id", flat=True))
+
+        with transaction.atomic():
+            for user in users:
+                profile,_ = UserProfile.objects.get_or_create(user=user)
+                profile.is_banned = False
+                profile.ban_reason = ""
+                profile.banned_at = None
+                profile.token_version += 1
+                profile.save(update_fields=[
+                    "is_banned",
+                    "ban_reason",
+                    "banned_at",
+                    "token_version",
+                ])
+
+        return Response({
+            "code": 200,
+            "message": "用户解封成功",
+            "data": {
+                "requested_count": len(user_ids),
+                "updated_count": len(existing_user_ids),
+                "updated_user_ids": existing_user_ids,
+                "missing_user_ids": [
+                    user_id for user_id in user_ids if user_id not in existing_user_ids
+                ],
+            },
+        }, status=status.HTTP_200_OK)

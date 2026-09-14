@@ -17,6 +17,10 @@ class UserProfile(models.Model):
     last_login_user_agent = models.TextField(blank=True, default="")
     last_login_at = models.DateTimeField(null=True, blank=True)
 
+    is_banned = models.BooleanField(default=False)
+    ban_reason = models.CharField(max_length=255, blank=True, default="")
+    banned_at = models.DateTimeField(null=True, blank=True)
+
     def __str__(self):
         return f"{self.user_id} token_version={self.token_version}"
 

@@ -12,8 +12,12 @@ class SingleSessionJWTAuthentication(JWTAuthentication):
         # 不关心第二个值，就用 _ 接住
         profile, _ = UserProfile.objects.get_or_create(user=user)
 
+        if profile.is_banned:
+            raise AuthenticationFailed("账号已被封禁，请联系管理员")
+
         if token_version is None:
             raise AuthenticationFailed("登录状态已失效，请重新登录")
+        
         if token_version != profile.token_version:
             raise AuthenticationFailed("账号已在其他设备登录，请重新登录")
 

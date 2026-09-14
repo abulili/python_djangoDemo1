@@ -83,6 +83,9 @@ class SingleSessionTokenObtainPairSerializer(TokenObtainPairSerializer):
         request = self.context.get("request")
         profile, _ = UserProfile.objects.get_or_create(user=self.user)
 
+        if profile.is_banned:
+            raise AuthenticationFailed("账号已被封禁，请联系管理员")
+
         profile.token_version += 1
 
         ip_address = None
@@ -143,6 +146,9 @@ class SingleSessionTokenRefreshSerializer(TokenRefreshSerializer):
             # token 是伪造/异常来源
             raise AuthenticationFailed("登录状态已失效，请重新登录")
 
+        if profile.is_banned:
+            raise AuthenticationFailed("账号已被封禁，请联系管理员")
+
         if token_version != profile.token_version: # 版本号的累加
             raise AuthenticationFailed("账号已在其他设备登录，请重新登录")
 
@@ -166,5 +172,23 @@ class LoginEventSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+class ForceLogoutUsersSerializer(serializers.Serializer):
+    # 校验请求体
+    """
+    user_ids 必须是一个列表
+    列表里的每一项必须是整数
+    每个整数最小是 1
+    这个列表不能为空
+    """
+    user_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+    )
 
+class BanUsersSerializer(serializers.Serializer):
+    user_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+    )
+    ban_reason = serializers.CharField(max_length=255, allow_null=False, allow_blank=True,default="")
         

@@ -4,6 +4,7 @@ from rest_framework.test import APIClient
 from rest_framework import status
 
 from .models import UserProfile, LoginEvent
+from django.utils import timezone
 
 # Create your tests here.
 @override_settings(
@@ -278,3 +279,248 @@ class LoginEventApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["reason"], "login_failed")
+
+class ForceLogoutUsersTests(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(
+            username="force_logout_user1",
+            password="123456",
+        )
+        self.user2 = User.objects.create_user(
+            username="force_logout_user2",
+            password="123456",
+        )
+        self.normal_user = User.objects.create_user(
+            username="force_logout_normal",
+            password="123456",
+        )
+        self.admin = User.objects.create_superuser(
+            username="force_logout_admin",
+            password="123456",
+            email="force-admin@example.com",
+        )
+
+        self.client = APIClient()
+
+    def test_normal_user_cannot_force_logout_users(self):
+        self.client.force_authenticate(user=self.normal_user)
+
+        response = self.client.post("/api/users/force-logout/", {
+            "user_ids": [self.user1.id],
+        }, format="json")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_force_logout_users(self):
+        self.client.force_authenticate(user=self.admin)
+
+        before_user1_version = self.user1.profile.token_version
+        before_user2_version = self.user2.profile.token_version
+
+        response = self.client.post("/api/users/force-logout/", {
+            "user_ids": [self.user1.id, self.user2.id],
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["requested_count"], 2) # 因为传了两个用户
+        self.assertEqual(response.data["data"]["updated_count"], 2)
+
+        self.user1.profile.refresh_from_db() # self.user1.profile因为这个 Python 对象可能还是旧数据，所以重新从数据库加载这个 profile 的最新值
+        self.user2.profile.refresh_from_db()
+
+        self.assertEqual(self.user1.profile.token_version, before_user1_version + 1)
+        self.assertEqual(self.user2.profile.token_version, before_user2_version + 1)
+
+    def test_force_logout_returns_missing_user_ids(self):
+        self.client.force_authenticate(user=self.admin)
+
+        missing_user_id = 999999
+
+        response = self.client.post("/api/users/force-logout/", {
+            "user_ids": [self.user1.id, missing_user_id],
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["requested_count"], 2)
+        self.assertEqual(response.data["data"]["updated_count"], 1) # 表示实际数据库里找到并更新了几个用户
+        self.assertEqual(response.data["data"]["updated_user_ids"], [self.user1.id])
+        self.assertEqual(response.data["data"]["missing_user_ids"], [missing_user_id])
+
+    def test_force_logout_requires_user_ids(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post("/api/users/force-logout/", {
+            "user_ids": [],
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_force_logout_invalidates_user_access_token(self):
+        login_client = APIClient()
+        login_response = login_client.post("/api/token/", {
+            "username": "force_logout_user1",
+            "password": "123456",
+        }, format="json")
+        self.assertEqual(login_response.status_code, 200)
+
+        access = login_response.data["access"]
+
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=self.admin)
+
+        force_response = admin_client.post("/api/users/force-logout/", {
+            "user_ids": [self.user1.id],
+        }, format="json")
+        self.assertEqual(force_response.status_code, 200)
+
+        old_client = APIClient()
+        old_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+
+        response = old_client.get("/api/logs/")
+        self.assertEqual(response.status_code, 401)
+
+class BanUsersTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="ban_target_user",
+            password="123456",
+        )
+        self.normal_user = User.objects.create_user(
+            username="ban_normal_user",
+            password="123456",
+        )
+        self.admin = User.objects.create_superuser(
+            username="ban_admin_user",
+            password="123456",
+            email="ban-admin@example.com",
+        )
+        self.client = APIClient()
+
+    def test_normal_user_cannot_ban_users(self):
+        self.client.force_authenticate(user=self.normal_user)
+
+        response = self.client.post("/api/users/ban/", {
+            "user_ids": [self.user.id],
+            "reason": "测试封禁",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_ban_user(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post("/api/users/ban/", {
+            "user_ids": [self.user.id],
+            "ban_reason": "异常请求",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        profile = UserProfile.objects.get(user=self.user)
+
+        self.assertTrue(profile.is_banned)
+        self.assertEqual(profile.ban_reason, "异常请求")
+        self.assertIsNotNone(profile.banned_at)
+
+    def test_ban_invalidates_access_token(self):
+        login_response = self.client.post("/api/token/", {
+            "username": "ban_target_user",
+            "password": "123456",
+        }, format="json")
+        self.assertEqual(login_response.status_code, 200)
+
+        access = login_response.data["access"]
+
+        # 模拟管理员登录
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=self.admin)
+
+        response = admin_client.post("/api/users/ban/", {
+            "user_ids": [self.user.id],
+            "ban_reason": "异常请求",
+        }, format="json")
+        self.assertEqual(response.status_code, 200)
+
+        user_client = APIClient()
+        user_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+
+        response = user_client.get("/api/logs/")
+        # 被封禁后，旧 access token 不能再访问业务接口，应该返回 401。
+        self.assertEqual(response.status_code, 401)
+
+    def test_banned_user_cannot_refresh_token(self):
+        login_response = self.client.post("/api/token/", {
+            "username": "ban_target_user",
+            "password": "123456",
+        }, format="json")
+        self.assertEqual(login_response.status_code, 200)
+
+        refresh = login_response.data["refresh"]
+
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=self.admin)
+        ban_response = admin_client.post("/api/users/ban/", {
+            "user_ids": [self.user.id],
+            "ban_reason": "异常请求",
+        }, format="json")
+        self.assertEqual(ban_response.status_code, 200)
+
+        response = self.client.post("/api/token/refresh/", {
+            "refresh": refresh,
+        }, format="json")
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_can_unban_user(self):
+        self.user.profile.is_banned = True
+        self.user.profile.ban_reason = "异常请求"
+        self.user.profile.banned_at = timezone.now()
+        self.user.profile.save(update_fields=["is_banned", "ban_reason", "banned_at"])
+
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post("/api/users/unban/", {
+            "user_ids": [self.user.id],
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        self.user.profile.refresh_from_db()
+        self.assertFalse(self.user.profile.is_banned)
+        self.assertEqual(self.user.profile.ban_reason, "")
+        self.assertIsNone(self.user.profile.banned_at)
+
+    def test_unbanned_user_can_login_again(self):
+        self.user.profile.is_banned = True
+        self.user.profile.ban_reason = "异常请求"
+        self.user.profile.banned_at = timezone.now()
+        self.user.profile.save(update_fields=["is_banned", "ban_reason", "banned_at"])
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post("/api/users/unban/", {
+            "user_ids": [self.user.id],
+        }, format="json")
+        self.assertEqual(response.status_code, 200)
+
+        login_response = self.client.post("/api/token/", {
+            "username": "ban_target_user",
+            "password": "123456",
+        }, format="json")
+
+        self.assertEqual(login_response.status_code, 200)
+        self.assertIn("access", login_response.data)
+
+    def test_banned_user_cannot_login(self):
+        self.user.profile.is_banned = True
+        self.user.profile.ban_reason = "异常请求"
+        self.user.profile.banned_at = timezone.now()
+        self.user.profile.save(update_fields=["is_banned", "ban_reason", "banned_at"])
+
+        response = self.client.post("/api/token/", {
+            "username": "ban_target_user",
+            "password": "123456",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 401)
+
+
+
