@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from .serializers import (
     UserRegisterSerializer,SingleSessionTokenObtainPairSerializer, SingleSessionTokenRefreshSerializer, 
-    LoginEventSerializer, ForceLogoutUsersSerializer, BanUsersSerializer, IPBlockRulesSerializer
+    LoginEventSerializer, ForceLogoutUsersSerializer, BanUsersSerializer, IPBlockRuleSerializer
 )
 from django.utils import timezone
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication 
@@ -202,7 +202,7 @@ class UnbanUsersView(APIView):
             },
         }, status=status.HTTP_200_OK)
 
-class IPBlockRulesViewSet(viewsets.ModelViewSet):
+class IPBlockRuleViewSet(viewsets.ModelViewSet):
     """
     GET /api/users/ip-block-rules/
     POST /api/users/ip-block-rules/
@@ -210,7 +210,7 @@ class IPBlockRulesViewSet(viewsets.ModelViewSet):
     DELETE /api/users/ip-block-rules/{id}/
     """
     permission_classes = [IsAdminUser]
-    serializer_class = IPBlockRulesSerializer
+    serializer_class = IPBlockRuleSerializer
 
     def get_queryset(self):
         # 查询所有 IPBlockRule，并且顺手把 blocked_by 这个管理员用户也一起查出来。因为 blocked_by 是外键
@@ -230,3 +230,4 @@ class IPBlockRulesViewSet(viewsets.ModelViewSet):
     # 当前端 POST 创建 IPBlockRule 时，保存前自动把 blocked_by 设置成当前管理员。
     def perform_create(self, serializer):
         serializer.save(blocked_by=self.request.user)
+

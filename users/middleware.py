@@ -13,6 +13,9 @@ from django.http import JsonResponse
 from .models import IPBlockRule
 from .utils import get_client_ip
 
+from django.conf import settings
+
+
 class IPBlockMiddleware:
     # 初始化时执行一次
     def __init__(self, get_response):
@@ -22,6 +25,9 @@ class IPBlockMiddleware:
     # 每次请求来了都会执行
     def __call__(self, request):
         client_ip = get_client_ip(request)
+    
+        if client_ip in getattr(settings, "IP_BLOCK_EXEMPT_IPS", []):
+            return self.get_response(request)
 
         if client_ip and IPBlockRule.objects.filter(
             ip_address=client_ip,

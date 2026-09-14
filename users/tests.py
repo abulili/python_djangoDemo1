@@ -522,6 +522,7 @@ class BanUsersTests(TestCase):
 
         self.assertEqual(response.status_code, 401)
 
+@override_settings(IP_BLOCK_EXEMPT_IPS=[])
 class IPBlockRuleTests(TestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser(
@@ -613,6 +614,38 @@ class IPBlockRuleTests(TestCase):
 
         self.assertNotEqual(response.status_code, 403)
 
+    @override_settings(IP_BLOCK_EXEMPT_IPS=["8.8.8.8"])
+    def test_exempt_ip_is_allowed_even_when_blocked(self):
+        IPBlockRule.objects.create(
+            ip_address="8.8.8.8",
+            reason="管理员 IP 豁免",
+            is_active=True,
+            blocked_by=self.admin,
+        )
+
+        response = self.client.get(
+            "/healthy/",
+            REMOTE_ADDR="8.8.8.8",
+        )
+
+        self.assertNotEqual(response.status_code, 403)
+
+    def test_x_forwarded_for_blocked_ip_is_rejected(self):
+        IPBlockRule.objects.create(
+            ip_address="8.8.8.8",
+            reason="代理后的真实 IP 被封",
+            is_active=True,
+            blocked_by=self.admin,
+        )
+
+        response = self.client.get(
+            "/healthy/",
+            REMOTE_ADDR="10.0.0.1",
+            HTTP_X_FORWARDED_FOR="8.8.8.8, 10.0.0.1",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["message"], "当前 IP 已被限制访问")
 
 
 

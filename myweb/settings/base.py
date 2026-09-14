@@ -265,3 +265,9 @@ CORS_EXPOSE_HEADERS = [
 AI_TASK_TIMEOUT_MINUTES = 5
 AI_TASK_OWNER_CACHE_SECONDS = 3600
 AI_TASK_RECOVERED_OWNER_CACHE_SECONDS = 600
+
+IP_BLOCK_EXEMPT_IPS = [
+    ip.strip()
+    for ip in os.getenv("IP_BLOCK_EXEMPT_IPS", "").split(",")
+    if ip.strip()
+]

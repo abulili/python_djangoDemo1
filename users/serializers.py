@@ -192,8 +192,32 @@ class BanUsersSerializer(serializers.Serializer):
     )
     ban_reason = serializers.CharField(max_length=255, allow_null=False, allow_blank=True,default="")
         
-class IPBlockRulesSerializer(serializers.ModelSerializer):
+class IPBlockRuleSerializer(serializers.ModelSerializer):
     blocked_by_username = serializers.CharField(source='blocked_by.username', read_only=True)
+
+    class Meta:
+        model = IPBlockRule
+        fields = [
+            "id",
+            "ip_address",
+            "reason",
+            "is_active",
+            "blocked_at",
+            "blocked_by",
+            "blocked_by_username",
+        ]
+        read_only_fields = [
+            "id",
+            "blocked_at",
+            "blocked_by",
+            "blocked_by_username",
+        ]
+
+class IPBlockRuleSerializer(serializers.ModelSerializer):
+    blocked_by_username = serializers.CharField(
+        source='blocked_by.username',
+        read_only=True,
+    )
 
     class Meta:
         model = IPBlockRule

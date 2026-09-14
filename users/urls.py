@@ -1,7 +1,7 @@
 from django.urls import path,include
 
 from .views import (UserRegisterView, LogoutView, LoginEventViewSet, 
-ForceLogoutUsersView, BanUsersView, UnbanUsersView, IPBlockRulesViewSet
+ForceLogoutUsersView, BanUsersView, UnbanUsersView, IPBlockRuleViewSet
 )
 
 from rest_framework.routers import DefaultRouter
@@ -9,7 +9,7 @@ from rest_framework.routers import DefaultRouter
 
 router = DefaultRouter()
 router.register(r'login-events', LoginEventViewSet, basename='login-event')
-router.register(r'ip-block-rules', IPBlockRulesViewSet, basename='ip-block-rule')
+router.register(r'ip-block-rules', IPBlockRuleViewSet, basename='ip-block-rule')
 
 urlpatterns = [
     # as_view() 是 Django 类视图（Class-Based View）的入口方法，它将类转换为可调用的视图函数。
