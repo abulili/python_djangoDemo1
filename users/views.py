@@ -5,13 +5,13 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from .serializers import (
     UserRegisterSerializer,SingleSessionTokenObtainPairSerializer, SingleSessionTokenRefreshSerializer, 
-    LoginEventSerializer, ForceLogoutUsersSerializer, BanUsersSerializer, IPBlockRuleSerializer
+    LoginEventSerializer, ForceLogoutUsersSerializer, BanUsersSerializer, IPBlockRuleSerializer, RequestRiskEventSerializer
 )
 from django.utils import timezone
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication 
 
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .models import UserProfile, LoginEvent, IPBlockRule
+from .models import UserProfile, LoginEvent, IPBlockRule, RequestRiskEvent
 
 from rest_framework import viewsets
 from rest_framework.permissions import IsAdminUser
@@ -234,3 +234,38 @@ class IPBlockRuleViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(blocked_by=self.request.user)
 
+class RequestRiskEventViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    GET /api/users/request-risk-events/
+    POST /api/users/request-risk-events/
+    PATCH /api/users/request-risk-events/{id}/
+    DELETE /api/users/request-risk-events/{id}/
+    """
+    permission_classes = [IsAdminUser]
+    serializer_class = RequestRiskEventSerializer
+
+    def get_queryset(self):
+        queryset = RequestRiskEvent.objects.select_related("user").all()
+        
+        user_id = self.request.query_params.get("user_id")
+        username = self.request.query_params.get("username")
+        ip_address = self.request.query_params.get("ip_address")
+        risk_type = self.request.query_params.get("risk_type")
+        status_code = self.request.query_params.get("status_code")
+
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+
+        if username:
+            queryset = queryset.filter(user__username__icontains=username)
+
+        if ip_address:
+            queryset = queryset.filter(ip_address=ip_address)
+
+        if risk_type:
+            queryset = queryset.filter(risk_type=risk_type)
+
+        if status_code:
+            queryset = queryset.filter(status_code=status_code)
+
+        return queryset

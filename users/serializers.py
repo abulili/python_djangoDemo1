@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from django.utils import timezone
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
-from .models import UserProfile, LoginEvent, IPBlockRule
+from .models import UserProfile, LoginEvent, IPBlockRule, RequestRiskEvent
 from rest_framework_simplejwt.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.tokens import RefreshToken
 from .utils import get_client_ip
@@ -237,5 +237,26 @@ class IPBlockRuleSerializer(serializers.ModelSerializer):
             "blocked_by_username",
         ]
 
+class RequestRiskEventSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
 
+    class Meta:
+        model = RequestRiskEvent
+        fields = [
+            "id",
+            "user",
+            "username",
+            "ip_address",
+            "path",
+            "method",
+            "status_code",
+            "risk_type",
+            "count",
+            "window_seconds",
+            "detail",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    
 

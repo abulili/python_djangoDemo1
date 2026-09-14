@@ -724,7 +724,83 @@ class RequestRiskEventTests(TestCase):
 
         self.assertEqual(RequestRiskEvent.objects.count(), 0)
 
-        
+class RequestRiskEventApiTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="risk_event_user",
+            password="123456",
+        )
+        self.admin = User.objects.create_superuser(
+            username="risk_event_admin",
+            password="123456",
+            email="risk-event-admin@example.com",
+        )
+        self.client = APIClient()
+
+        RequestRiskEvent.objects.create(
+            user=self.user,
+            ip_address="8.8.8.8",
+            path="/api/ai-trace-step-logs/",
+            method="GET",
+            status_code=401,
+            risk_type="auth_failed",
+            count=3,
+            window_seconds=60,
+            detail={"threshold": 3},
+        )
+        RequestRiskEvent.objects.create(
+            user=None,
+            ip_address="1.1.1.1",
+            path="/api/logs/task/test-task/",
+            method="GET",
+            status_code=429,
+            risk_type="rate_limited",
+            count=10,
+            window_seconds=60,
+            detail={"threshold": 10},
+        )
+
+    def test_normal_user_cannot_query_request_risk_events(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get("/api/users/request-risk-events/")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_query_request_risk_events(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/users/request-risk-events/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
+
+    def test_admin_can_filter_request_risk_events_by_ip(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/users/request-risk-events/?ip_address=8.8.8.8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["risk_type"], "auth_failed")
+
+    def test_admin_can_filter_request_risk_events_by_risk_type(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/users/request-risk-events/?risk_type=rate_limited")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["ip_address"], "1.1.1.1")
+
+    def test_admin_can_filter_request_risk_events_by_status_code(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/users/request-risk-events/?status_code=401")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["risk_type"], "auth_failed")
             
 
     
