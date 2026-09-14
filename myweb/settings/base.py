@@ -37,10 +37,12 @@ INSTALLED_APPS = [
 ]
 
 # 中间件列表，请求会按顺序经过这些中间件处理，响应会按相反顺序返回
+# 请求进来：从上往下走. 响应回来：从下往上走
 MIDDLEWARE = [
+    'users.middleware.RequestRiskEventMiddleware', # 风险
     'ai_log.middleware.TraceIdMiddleware',
-    'corsheaders.middleware.CorsMiddleware',  # 放在最前面 处理跨域
     'users.middleware.IPBlockMiddleware', # ip黑名单中间件
+    'corsheaders.middleware.CorsMiddleware',  # 放在最前面 处理跨域
     'django.middleware.security.SecurityMiddleware',  # 安全相关，如 HTTPS 重定向、安全头
     'django.contrib.sessions.middleware.SessionMiddleware',  # 会话管理，给 request 添加 session 对象
     'django.middleware.common.CommonMiddleware',  # 通用中间件，处理 URL 规范化、语言设置等
@@ -266,8 +268,13 @@ AI_TASK_TIMEOUT_MINUTES = 5
 AI_TASK_OWNER_CACHE_SECONDS = 3600
 AI_TASK_RECOVERED_OWNER_CACHE_SECONDS = 600
 
+# 白名单
 IP_BLOCK_EXEMPT_IPS = [
     ip.strip()
     for ip in os.getenv("IP_BLOCK_EXEMPT_IPS", "").split(",")
     if ip.strip()
 ]
+
+SECURITY_RISK_EVENT_ENABLED = os.getenv("SECURITY_RISK_EVENT_ENABLED", "true").lower() == "true"
+SECURITY_RISK_WINDOW_SECONDS = int(os.getenv("SECURITY_RISK_WINDOW_SECONDS", "60") or 60)
+SECURITY_RISK_THRESHOLD = int(os.getenv("SECURITY_RISK_THRESHOLD", "10") or 10)

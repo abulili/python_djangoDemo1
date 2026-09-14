@@ -3,8 +3,10 @@ from django.contrib.auth.models import User
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import UserProfile, LoginEvent, IPBlockRule
+from .models import UserProfile, LoginEvent, IPBlockRule, RequestRiskEvent
 from django.utils import timezone
+
+from django.core.cache import cache
 
 # Create your tests here.
 @override_settings(
@@ -647,6 +649,85 @@ class IPBlockRuleTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["message"], "当前 IP 已被限制访问")
 
+@override_settings(
+    SECURITY_RISK_EVENT_ENABLED=True,
+    SECURITY_RISK_WINDOW_SECONDS=60,
+    SECURITY_RISK_THRESHOLD=3,
+    IP_BLOCK_EXEMPT_IPS=[],
+)
+class RequestRiskEventTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_records_auth_failed_risk_event_after_threshold(self):
+        for _ in range(3):
+            self.client.get(
+                "/api/ai-trace-step-logs/",
+                REMOTE_ADDR="8.8.8.8",
+            )
+
+        event = RequestRiskEvent.objects.get(
+            ip_address="8.8.8.8",
+            risk_type="auth_failed"
+        )
+
+        self.assertEqual(event.status_code, 401)
+        self.assertEqual(event.count, 3)
+        self.assertEqual(event.path, "/api/ai-trace-step-logs/")
+        self.assertEqual(event.method, "GET")
+
+    def test_does_not_record_before_threshold(self):
+        for _ in range(2):
+            self.client.get(
+                "/api/ai-trace-step-logs/",
+                REMOTE_ADDR="8.8.8.8",
+            )
+
+        self.assertEqual(RequestRiskEvent.objects.count(), 0)
+
+    def test_records_rate_limited_risk_event(self):
+        response = self.client.get(
+            "/api/ai-trace-step-logs/",
+            REMOTE_ADDR="8.8.8.8",
+        )
+        response.status_code = 429
+
+        from users.utils import record_request_risk_event
+
+        """
+        record_request_risk_event(request, response)
+        但你没有 request 对象。
+        Django 测试响应里会保存原始请求：
+        拿刚才 self.client.get(...) 产生的那个请求对象，假装它对应一个 429 响应，用来测试风险记录函数。
+        主要是为了测 429 rate_limited，不用真的触发限流
+        """
+        fake_request = response.wsgi_request
+
+        for _ in range(3):
+            record_request_risk_event(fake_request, response)
+
+        event = RequestRiskEvent.objects.get(risk_type="rate_limited")
+        self.assertEqual(event.status_code, 429)
+        self.assertEqual(event.count, 3)
+
+    def test_request_risk_event_disabled(self):
+        with override_settings(SECURITY_RISK_EVENT_ENABLED=False):
+            for _ in range(3):
+                self.client.get(
+                    "/api/ai-trace-step-logs/",
+                    REMOTE_ADDR="8.8.8.8",
+                )
+
+        self.assertEqual(RequestRiskEvent.objects.count(), 0)
+
+        
+            
+
+    
 
 
 

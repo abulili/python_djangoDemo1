@@ -72,3 +72,36 @@ class IPBlockRule(models.Model):
 
     def __str__(self):
         return f"{self.ip_address} reason={self.reason}"
+
+class RequestRiskEvent(models.Model):
+    RISK_TYPES = [
+        ("blocked_ip", "黑名单 IP"),
+        ("auth_failed", "认证失败"),
+        ("permission_denied", "权限拒绝"),
+        ("rate_limited", "限流"),
+        ("server_error", "服务异常"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="request_risk_events",
+    )
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    path = models.CharField(max_length=255, blank=True, default="")
+    method = models.CharField(max_length=20, blank=True, default="")
+    status_code = models.PositiveIntegerField(default=0)
+    risk_type = models.CharField(max_length=50, choices=RISK_TYPES)
+    # 是当前窗口内累计第几次触发风险事件，出发10次就会在最后一次记录
+    count = models.PositiveIntegerField(default=1)
+    window_seconds = models.PositiveIntegerField(default=60)
+    detail = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.risk_type} {self.ip_address} status={self.status_code}"

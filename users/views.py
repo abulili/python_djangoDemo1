@@ -21,6 +21,9 @@ from django.contrib.auth.models import User
 
 from django.utils import timezone
 
+from django.conf import settings
+from django.core.cache import cache
+
 # Create your views here.
 class UserRegisterView(APIView):
     # ✅ 关键：移除 JWT 认证，只保留 Session 认证

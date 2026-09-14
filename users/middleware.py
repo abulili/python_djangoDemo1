@@ -11,9 +11,11 @@
 from django.http import JsonResponse
 
 from .models import IPBlockRule
-from .utils import get_client_ip
+from .utils import get_client_ip, record_request_risk_event
 
 from django.conf import settings
+
+
 
 
 class IPBlockMiddleware:
@@ -40,3 +42,19 @@ class IPBlockMiddleware:
             }, status=403)
 
         return self.get_response(request)
+
+class RequestRiskEventMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+
+        try:
+            record_request_risk_event(request, response)
+        except Exception:
+            pass
+
+        return response
+
+    
