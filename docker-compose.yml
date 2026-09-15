@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # MySQL 数据库
@@ -12,7 +12,7 @@ services:
       MYSQL_CHARACTER_SET_SERVER: utf8mb4
       MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -43,6 +43,7 @@ services:
       redis:
         condition: service_started
     environment:
+      - DJANGO_SETTINGS_MODULE=myweb.settings.prod
       - DB_HOST=db
       - DB_PORT=3306
       - DB_NAME=${DB_NAME}
@@ -53,6 +54,30 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS}
+    volumes:
+      - ./logs:/app/logs
+  worker:
+    build: .
+    container_name: django_worker
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      - DJANGO_SETTINGS_MODULE=myweb.settings.prod
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_NAME=${DB_NAME}
+      - DB_USER=root
+      - DB_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SECRET_KEY=${SECRET_KEY}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - FEISHU_BOT_WEBHOOK=${FEISHU_BOT_WEBHOOK}
+    command: celery -A myweb worker -l info --concurrency=3
     volumes:
       - ./logs:/app/logs
 

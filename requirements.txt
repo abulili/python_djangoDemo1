@@ -38,4 +38,4 @@ httpx==0.24.0
 django-cors-headers==4.9.0
 
 # ========== 生产级 ==========
-# gunicorn==21.2.0
+gunicorn==21.2.0

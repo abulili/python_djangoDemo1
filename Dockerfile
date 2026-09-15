@@ -33,6 +33,6 @@ RUN mkdir -p /app/logs
 EXPOSE 8000
 
 # 启动命令（直接用 Django 开发服务器）
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"] # 开发环境
+# CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"] # 开发环境
 # 生产模式（新） --workers 3 表示启动 3 个 worker 进程处理请求，可以根据服务器 CPU 核心数调整（一般是 2 * CPU核数 + 1）。
-# CMD ["gunicorn", "myweb.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
+CMD ["gunicorn", "myweb.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
