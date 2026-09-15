@@ -279,3 +279,16 @@ SECURITY_RISK_EVENT_ENABLED = os.getenv("SECURITY_RISK_EVENT_ENABLED", "true").l
 SECURITY_RISK_WINDOW_SECONDS = int(os.getenv("SECURITY_RISK_WINDOW_SECONDS", "60") or 60)
 SECURITY_RISK_THRESHOLD = int(os.getenv("SECURITY_RISK_THRESHOLD", "10") or 10)
 SECURITY_NOTIFY_ENABLED = os.getenv("SECURITY_NOTIFY_ENABLED", "true").lower() == "true"
+# 风险总开关
+SECURITY_AUTO_ACTION_ENABLED = os.getenv("SECURITY_AUTO_ACTION_ENABLED", "false").lower() == "true"
+# 是否允许自动拉黑IP
+SECURITY_AUTO_BLOCK_IP_ENABLED = os.getenv("SECURITY_AUTO_BLOCK_IP_ENABLED", "false").lower() == "true"
+# 出发自动拉黑的风险类型
+SECURITY_AUTO_BLOCK_IP_RISK_TYPES = [
+    item.strip()
+    for item in os.getenv(
+        "SECURITY_AUTO_BLOCK_IP_RISK_TYPES",
+        "auth_failed,rate_limited",
+    ).split(",")
+    if item.strip()
+]

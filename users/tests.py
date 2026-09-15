@@ -14,6 +14,7 @@ from users.notifications import (
     send_feishu_security_notification,
 )
 from unittest.mock import Mock, patch
+from .utils import record_request_risk_event, apply_security_auto_action
 
 # Create your tests here.
 @override_settings(
@@ -952,5 +953,78 @@ class SecurityNotificationTests(TestCase):
         self.assertEqual(result["reason"], "request_failed")
         self.assertIn("network timeout", result["error"])
 
+class SecurityAutoActionTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    @override_settings(
+        SECURITY_AUTO_ACTION_ENABLED=False,
+        SECURITY_AUTO_BLOCK_IP_ENABLED=True,
+    )
+    def test_auto_action_disabled_does_not_block_ip(self):
+        event = RequestRiskEvent.objects.create(
+            risk_type="auth_failed",
+            ip_address="9.9.9.9",
+            path="/api/ai-trace-step-logs/",
+            method="GET",
+            status_code=401,
+            count=3,
+            window_seconds=60,
+            detail={},
+        )
+
+        result = apply_security_auto_action(event)
+
+        self.assertFalse(result["handled"])
+        self.assertFalse(IPBlockRule.objects.filter(ip_address="9.9.9.9").exists())
+
+    @override_settings(
+        SECURITY_AUTO_ACTION_ENABLED=True,
+        SECURITY_AUTO_BLOCK_IP_ENABLED=True,
+        SECURITY_AUTO_BLOCK_IP_RISK_TYPES=["auth_failed", "rate_limited"],
+    )
+    def test_auto_blocks_ip_for_allowed_risk_type(self):
+        event = RequestRiskEvent.objects.create(
+            risk_type="auth_failed",
+            ip_address="9.9.9.9",
+            path="/api/ai-trace-step-logs/",
+            method="GET",
+            status_code=401,
+            count=3,
+            window_seconds=60,
+            detail={},
+        )
+
+        result = apply_security_auto_action(event)
+
+        self.assertTrue(result["handled"])
+        self.assertEqual(result["action"], "block_ip")
+
+        rule = IPBlockRule.objects.get(ip_address="9.9.9.9")
+        self.assertTrue(rule.is_active)
+        self.assertIn("自动风控", rule.reason)
+
+    @override_settings(
+        SECURITY_AUTO_ACTION_ENABLED=True,
+        SECURITY_AUTO_BLOCK_IP_ENABLED=True,
+        SECURITY_AUTO_BLOCK_IP_RISK_TYPES=["rate_limited"],
+    )
+    def test_auto_action_ignores_not_allowed_risk_type(self):
+        event = RequestRiskEvent.objects.create(
+            risk_type="auth_failed",
+            ip_address="9.9.9.9",
+            path="/api/ai-trace-step-logs/",
+            method="GET",
+            status_code=401,
+            count=3,
+            window_seconds=60,
+            detail={},
+        )
+
+        result = apply_security_auto_action(event)
+
+        self.assertFalse(result["handled"])
+        self.assertEqual(result["reason"], "risk_type_not_allowed")
+        self.assertFalse(IPBlockRule.objects.filter(ip_address="9.9.9.9").exists())
 
 

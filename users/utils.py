@@ -1,6 +1,8 @@
 from django.conf import settings
 from django.core.cache import cache
 
+from .models import IPBlockRule
+
 def get_client_ip(request):
     if not request:
         return None
@@ -94,4 +96,71 @@ def record_request_risk_event(request, response):
     event.notify_result = notify_result
     event.save(update_fields=["notify_result"])
 
+    # 自动处理
+    auto_action_result = None
+
+    try: 
+        auto_action_result = apply_security_auto_action(event)
+    except Exception as e:
+        auto_action_result = {
+            "handled": False,
+            "reason": "auto_action_exception",
+            "error": str(e),
+        }
+    
+    detail = event.detail or {}
+    detail["auto_action_result"] = auto_action_result
+    event.detail = detail
+    event.save(update_fields=["detail"])
+
     return event
+
+def apply_security_auto_action(event):
+    if not getattr(settings, "SECURITY_AUTO_ACTION_ENABLED", False):
+        return {
+            "handled": False,
+            "reason": "auto_action_disabled",
+        }
+
+    if not getattr(settings, "SECURITY_AUTO_BLOCK_IP_ENABLED", False):
+        return {
+            "handled": False,
+            "reason": "auto_block_ip_disabled",
+        }
+
+    block_risk_types = getattr(settings, "SECURITY_AUTO_BLOCK_IP_RISK_TYPES", [])
+
+    if event.risk_type not in block_risk_types:
+        return {
+            "handled": False,
+            "reason": "risk_type_not_allowed",
+            "risk_type": event.risk_type,
+        }
+
+    if not event.ip_address:
+        return {
+            "handled": False,
+            "reason": "missing_ip",
+        }
+
+    rule, created = IPBlockRule.objects.get_or_create(
+        ip_address=event.ip_address,
+        defaults={
+            "reason": f"自动风控拉黑：{event.risk_type}，{event.count} 次 / {event.window_seconds} 秒",
+            "is_active": True,
+        },
+    )
+
+    if not created and not rule.is_active:
+        rule.is_active = True
+        rule.reason = f"自动风控重新拉黑：{event.risk_type}，{event.count} 次 / {event.window_seconds} 秒"
+        rule.save(update_fields=["is_active", "reason"])
+
+    return {
+        "handled": True,
+        "action": "block_ip",
+        "ip_address": event.ip_address,
+        "created": created,
+    }
+
+    
