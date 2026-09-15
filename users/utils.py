@@ -69,4 +69,29 @@ def record_request_risk_event(request, response):
         },
     )
 
+    try:
+        from .notifications import SecurityNotificationContext, send_feishu_security_notification
+
+        notify_result = send_feishu_security_notification(SecurityNotificationContext(
+            risk_type=risk_type,
+            ip_address=ip_address or "",
+            user_id=user.id if user else None,
+            username=user.username if user else "",
+            path=path,
+            method=method,
+            status_code=status_code,
+            count=current_count,
+            window_seconds=window_seconds,
+            detail=event.detail,
+        ))
+    except Exception as e:
+        notify_result = {
+            "sent": False,
+            "reason": "notification_exception",
+            "error": str(e),
+        }
+
+    event.notify_result = notify_result
+    event.save(update_fields=["notify_result"])
+
     return event

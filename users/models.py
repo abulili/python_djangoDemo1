@@ -98,6 +98,7 @@ class RequestRiskEvent(models.Model):
     count = models.PositiveIntegerField(default=1)
     window_seconds = models.PositiveIntegerField(default=60)
     detail = models.JSONField(default=dict, blank=True)
+    notify_result = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

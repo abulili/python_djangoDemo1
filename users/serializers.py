@@ -254,6 +254,7 @@ class RequestRiskEventSerializer(serializers.ModelSerializer):
             "count",
             "window_seconds",
             "detail",
+            "notify_result",
             "created_at",
         ]
         read_only_fields = fields

@@ -8,6 +8,13 @@ from django.utils import timezone
 
 from django.core.cache import cache
 
+from users.notifications import (
+    SecurityNotificationContext,
+    should_notify_security_event,
+    send_feishu_security_notification,
+)
+from unittest.mock import Mock, patch
+
 # Create your tests here.
 @override_settings(
     REST_FRAMEWORK={
@@ -724,6 +731,56 @@ class RequestRiskEventTests(TestCase):
 
         self.assertEqual(RequestRiskEvent.objects.count(), 0)
 
+    @override_settings(
+    SECURITY_NOTIFY_ENABLED=True,
+    FEISHU_BOT_WEBHOOK="https://example.com/feishu-webhook",
+    )
+    @patch("users.notifications.requests.post")
+    def test_records_security_notify_result_when_risk_event_created(self, mock_post):
+        mock_response = Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "code": 0,
+            "msg": "success",
+        }
+        mock_post.return_value = mock_response
+
+        for _ in range(3):
+            self.client.get(
+                "/api/ai-trace-step-logs/",
+                REMOTE_ADDR="8.8.8.8",
+            )
+
+        event = RequestRiskEvent.objects.get(
+            ip_address="8.8.8.8",
+            risk_type="auth_failed",
+        )
+
+        self.assertEqual(event.notify_result["sent"], True)
+        self.assertEqual(mock_post.call_count, 1)
+
+    @override_settings(
+        SECURITY_NOTIFY_ENABLED=True,
+        FEISHU_BOT_WEBHOOK="https://example.com/feishu-webhook",
+    )
+    @patch("users.notifications.requests.post")
+    def test_risk_event_still_created_when_security_notification_failed(self, mock_post):
+        mock_post.side_effect = Exception("feishu timeout")
+
+        for _ in range(3):
+            self.client.get(
+                "/api/ai-trace-step-logs/",
+                REMOTE_ADDR="8.8.8.8",
+            )
+
+        event = RequestRiskEvent.objects.get(
+            ip_address="8.8.8.8",
+            risk_type="auth_failed",
+        )
+
+        self.assertEqual(event.notify_result["sent"], False)
+        self.assertEqual(event.notify_result["reason"], "request_failed")
+
 class RequestRiskEventApiTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
@@ -802,8 +859,98 @@ class RequestRiskEventApiTests(TestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["risk_type"], "auth_failed")
             
+class SecurityNotificationTests(TestCase):
+    @override_settings(SECURITY_NOTIFY_ENABLED=False)
+    def test_should_not_notify_when_disabled(self):
+        ctx = SecurityNotificationContext(
+            risk_type="auth_failed",
+            ip_address="8.8.8.8",
+            status_code=401,
+            count=10
+        )
+        self.assertFalse(should_notify_security_event(ctx))
 
-    
+    @override_settings(SECURITY_NOTIFY_ENABLED=True)
+    def test_should_notify_when_enabled(self):
+        ctx = SecurityNotificationContext(
+            risk_type="auth_failed",
+            ip_address="8.8.8.8",
+            status_code=401,
+            count=10,
+        )
+
+        self.assertTrue(should_notify_security_event(ctx))
+
+    @override_settings(
+        SECURITY_NOTIFY_ENABLED=True,
+        FEISHU_BOT_WEBHOOK="https://example.com/feishu-webhook",
+    )
+    @patch("users.notifications.requests.post")
+    def test_send_feishu_security_notification_sends_webhook(self, mock_post):
+        mock_response = Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "code": 0,
+            "msg": "success",
+        }
+        mock_post.return_value = mock_response
+
+        result = send_feishu_security_notification(SecurityNotificationContext(
+            risk_type="auth_failed",
+            ip_address="8.8.8.8",
+            user_id=1,
+            username="testuser",
+            path="/api/ai-trace-step-logs/",
+            method="GET",
+            status_code=401,
+            count=10,
+            window_seconds=60,
+        ))
+
+        self.assertTrue(result["sent"])
+        self.assertEqual(mock_post.call_count, 1)
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["msg_type"], "text")
+        self.assertIn("AI通知", payload["content"]["text"])
+        self.assertIn("安全风控告警", payload["content"]["text"])
+        self.assertIn("8.8.8.8", payload["content"]["text"])
+
+    @override_settings(
+        SECURITY_NOTIFY_ENABLED=True,
+        FEISHU_BOT_WEBHOOK="",
+    )
+    @patch("users.notifications.requests.post")
+    def test_send_feishu_security_notification_skips_without_webhook(self, mock_post):
+        result = send_feishu_security_notification(SecurityNotificationContext(
+            risk_type="auth_failed",
+            ip_address="8.8.8.8",
+            status_code=401,
+            count=10,
+        ))
+
+        self.assertEqual(result["sent"], False)
+        self.assertEqual(result["reason"], "missing_webhook")
+        self.assertEqual(mock_post.call_count, 0)
+
+    @override_settings(
+        SECURITY_NOTIFY_ENABLED=True,
+        FEISHU_BOT_WEBHOOK="https://example.com/feishu-webhook",
+    )
+    @patch("users.notifications.requests.post")
+    def test_send_feishu_security_notification_handles_request_exception(self, mock_post):
+        mock_post.side_effect = Exception("network timeout")
+
+        result = send_feishu_security_notification(SecurityNotificationContext(
+            risk_type="auth_failed",
+            ip_address="8.8.8.8",
+            status_code=401,
+            count=10,
+        ))
+
+        self.assertEqual(result["sent"], False)
+        self.assertEqual(result["reason"], "request_failed")
+        self.assertIn("network timeout", result["error"])
 
 
 

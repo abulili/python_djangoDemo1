@@ -1983,8 +1983,9 @@ def health_check(request):
     # 检查redis缓存
     redis_healthy = True
     try:
-        # cache.set(key, value, timeout)：往缓存里存一个键值对,5s后自动删除
-        cache.set('health_check','ok',timeout=5)
+        # cache.set(key, value, timeout)：往缓存里存一个键值对,5s后自动删除,请求飞书 Webhook 最多等 5 秒。
+        # 因为飞书通知是旁路能力，不能因为飞书慢，把你自己的接口卡很久
+        cache.set('health_check','ok',timeout=5) 
         if cache.get('health_check') != 'ok':
             redis_healthy = False
     except Exception:
