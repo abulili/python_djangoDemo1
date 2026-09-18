@@ -9,15 +9,35 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import PaymentOrder, WorkflowOperationLog, WorkflowRequest, WorkflowTask
+from .models import (PaymentOrder, WorkflowOperationLog, WorkflowRequest, WorkflowTask,WorkflowTemplate,
+WorkflowTemplateNode)
 from .serializers import (
     CreatePaymentOrderSerializer,
     PaymentActionSerializer,
     PaymentOrderSerializer,
     WorkflowActionSerializer,
     WorkflowRequestSerializer,
+    WorkflowTemplateSerializer,
+    WorkflowTemplateNodeSerializer,
 )
 import uuid
+
+def get_default_template():
+    # 去数据库里找 code=payment_approval 且启用中的流程模板,找不到返回None
+    return WorkflowTemplate.objects.filter(
+        code="payment_approval",
+        is_active=True,
+    ).first()
+
+
+def get_approver_from_workflow(workflow, approver_field):
+    if approver_field == WorkflowTemplateNode.APPROVER_FIELD_CURRENT:
+        return workflow.current_approver
+
+    if approver_field == WorkflowTemplateNode.APPROVER_FIELD_SECOND:
+        return workflow.second_approver
+
+    return None
 
 class WorkflowRequestViewSet(viewsets.ModelViewSet):
     serializer_class = WorkflowRequestSerializer
@@ -79,10 +99,10 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="pending")
     def pending(self, request):
         queryset = self.get_queryset().filter(
-            current_approver=request.user,
-            status=WorkflowRequest.STATUS_PENDING,
+            tasks__approver=request.user,
             tasks__status=WorkflowTask.STATUS_PENDING,
-        )
+            status=WorkflowRequest.STATUS_PENDING,
+        ).distinct()
         serializer = self.get_serializer(queryset, many=True)
         return Response({
             "code": 200,
@@ -132,31 +152,58 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
                 "data": None,
             }, status=status.HTTP_400_BAD_REQUEST)
 
+       
+       
+        template = workflow.template or get_default_template()
+
+        if template is None:
+            return Response({
+                "code": 400,
+                "message": "未找到可用流程模板",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # 找模板的第一个节点。
+        first_node = template.nodes.filter(is_active=True).order_by("node_order").first()
+
+        if first_node is None:
+            return Response({
+                "code": 400,
+                "message": "流程模板没有可用节点",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        first_approver = get_approver_from_workflow(workflow, first_node.approver_field)
+
+        if first_approver is None:
+            return Response({
+                "code": 400,
+                "message": "请先指定审批人",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
         # 开启事务
         # 保证：状态更新成功 + 操作日志写入成功 
         # 要么都成功，要么都失败。
         with transaction.atomic():
             old_status = workflow.status
+
+            workflow.template = template
             workflow.status = WorkflowRequest.STATUS_PENDING
             workflow.submitted_at = timezone.now()
-
-            if workflow.current_approver is None:
-                workflow.current_approver = request.user
-                
-
-            # update_fields 这次只保存这几个字段
             workflow.save(update_fields=[
+                "template",
                 "status",
                 "submitted_at",
-                "current_approver",
                 "updated_at",
             ])
+
             WorkflowTask.objects.create(
                 workflow=workflow,
-                node_name="一级审批",
-                node_order=1,
-                approver=workflow.current_approver,
+                node_name=first_node.node_name,
+                node_order=first_node.node_order,
+                approver=first_approver,
             )
+
             WorkflowOperationLog.objects.create(
                 workflow=workflow,
                 operator=request.user,
@@ -217,12 +264,29 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
                 "updated_at",
             ])
 
-            if current_task.node_order == 1 and workflow.second_approver_id:
+            next_node = None
+
+            if workflow.template_id:
+                next_node = workflow.template.nodes.filter(
+                    is_active=True,
+                    node_order__gt=current_task.node_order,
+                ).order_by("node_order").first()
+
+            if next_node:
+                next_approver = get_approver_from_workflow(workflow, next_node.approver_field)
+
+                if next_approver is None:
+                    return Response({
+                        "code": 400,
+                        "message": "下一节点审批人不存在",
+                        "data": None,
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
                 WorkflowTask.objects.create(
                     workflow=workflow,
-                    node_name="二级审批",
-                    node_order=2,
-                    approver=workflow.second_approver,
+                    node_name=next_node.node_name,
+                    node_order=next_node.node_order,
+                    approver=next_approver,
                 )
 
                 WorkflowOperationLog.objects.create(
@@ -234,7 +298,7 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
                     comment=serializer.validated_data["comment"],
                     snapshot={
                         "approved_task_id": current_task.id,
-                        "next_node": "二级审批",
+                        "next_node": next_node.node_name,
                     },
                 )
             else:
@@ -562,5 +626,17 @@ class PaymentOrderViewSet(viewsets.ReadOnlyModelViewSet):
             "data": self.get_serializer(order).data,
         })
 
-    
+class WorkflowTemplateViewSet(viewsets.ModelViewSet):
+    serializer_class = WorkflowTemplateSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = WorkflowTemplate.objects.prefetch_related("nodes")
+
+        if self.request.user.is_superuser:
+            return queryset
+
+        return queryset.filter(is_active=True)
+
+
 

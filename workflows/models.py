@@ -74,6 +74,14 @@ class WorkflowRequest(models.Model):
         related_name="second_pending_workflow_requests",
         verbose_name="二级审批人",
     )
+    template = models.ForeignKey(
+        "WorkflowTemplate",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workflow_requests",
+        verbose_name="流程模板",
+    )
     submitted_at = models.DateTimeField(null=True, blank=True, verbose_name="提交时间")
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name="完成时间")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
@@ -226,3 +234,52 @@ class WorkflowTask(models.Model):
 
     def __str__(self):
         return f"{self.workflow_id} - {self.node_name} - {self.status}"
+
+class WorkflowTemplate(models.Model):
+    name = models.CharField(max_length=100, verbose_name="模板名称")
+    code = models.CharField(max_length=50, unique=True, db_index=True, verbose_name="模板编码")
+    description = models.TextField(blank=True, default="", verbose_name="说明")
+    is_active = models.BooleanField(default=True, db_index=True, verbose_name="是否启用")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return self.name
+
+class WorkflowTemplateNode(models.Model):
+    APPROVER_FIELD_CURRENT = "current_approver"
+    APPROVER_FIELD_SECOND = "second_approver"
+
+    APPROVER_FIELD_CHOICES = [
+        (APPROVER_FIELD_CURRENT, "一级审批人"),
+        (APPROVER_FIELD_SECOND, "二级审批人"),
+    ]
+
+    template = models.ForeignKey(
+        WorkflowTemplate,
+        on_delete=models.CASCADE,
+        related_name="nodes",
+        verbose_name="流程模板",
+    )
+    node_name = models.CharField(max_length=100, verbose_name="节点名称")
+    node_order = models.PositiveIntegerField(verbose_name="节点顺序")
+    approver_field = models.CharField(
+        max_length=50,
+        choices=APPROVER_FIELD_CHOICES,
+        verbose_name="审批人字段",
+    )
+    is_active = models.BooleanField(default=True, db_index=True, verbose_name="是否启用")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        ordering = ["node_order", "id"]
+        unique_together = ["template", "node_order"]
+
+    def __str__(self):
+        return f"{self.template.code} - {self.node_name}"
+
+

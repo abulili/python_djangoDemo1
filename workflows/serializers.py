@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import PaymentOrder, WorkflowOperationLog, WorkflowRequest, WorkflowTask
+from .models import (PaymentOrder, WorkflowOperationLog, WorkflowRequest, WorkflowTask, WorkflowTemplate, WorkflowTemplateNode)
 
 class WorkflowOperationLogSerializer(serializers.ModelSerializer):
     # source="operator.username"： 从 operator 这个关联用户对象里取 username。
@@ -73,6 +73,7 @@ class WorkflowRequestSerializer(serializers.ModelSerializer):
     operation_logs = WorkflowOperationLogSerializer(many=True, read_only=True)
     payment_order = PaymentOrderSerializer(read_only=True)
     tasks = WorkflowTaskSerializer(many=True, read_only=True)
+    template_name = serializers.CharField(source="template.name", read_only=True)
 
     class Meta:
         model = WorkflowRequest
@@ -87,6 +88,7 @@ class WorkflowRequestSerializer(serializers.ModelSerializer):
             "applicant",
             "applicant_username",
             "current_approver",
+            "second_approver",
             "current_approver_username",
             "payment_order",
             "tasks",
@@ -95,6 +97,8 @@ class WorkflowRequestSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "operation_logs",
+            "template",
+            "template_name",
         ]
         read_only_fields = [
             "id",
@@ -118,6 +122,37 @@ class CreatePaymentOrderSerializer(serializers.Serializer):
 
 class PaymentActionSerializer(serializers.Serializer):
     comment = serializers.CharField(required=False, allow_blank=True, default="")
+
+class WorkflowTemplateNodeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WorkflowTemplateNode
+        fields = [
+            "id",
+            "template",
+            "node_name",
+            "node_order",
+            "approver_field",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ['id',"created_at", "updated_at"]
+
+class WorkflowTemplateSerializer(serializers.ModelSerializer):
+    nodes = WorkflowTemplateNodeSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = WorkflowTemplate
+        fields = [
+            "id",
+            "name",
+            "code",
+            "description",
+            "is_active",
+            "nodes",
+            "created_at",
+            "updated_at",
+        ]
 
 
 

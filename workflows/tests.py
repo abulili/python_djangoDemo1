@@ -2,7 +2,9 @@ from django.test import TestCase
 
 # Create your tests here.
 from django.contrib.auth import get_user_model
-from .models import WorkflowOperationLog, WorkflowRequest, PaymentOrder, WorkflowTask
+from .models import (WorkflowOperationLog, WorkflowRequest, PaymentOrder, WorkflowTask,
+    WorkflowTemplate,
+    WorkflowTemplateNode,)
 from rest_framework.test import APITestCase
 
 User = get_user_model()
@@ -16,6 +18,24 @@ class WorkflowRequestTests(APITestCase):
         self.approver = User.objects.create_user(
             username="workflow_approver",
             password="123456",
+        )
+        self.template = WorkflowTemplate.objects.create(
+            name="付款审批流程",
+            code="payment_approval",
+        )
+
+        WorkflowTemplateNode.objects.create(
+            template=self.template,
+            node_name="一级审批",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+        )
+
+        WorkflowTemplateNode.objects.create(
+            template=self.template,
+            node_name="二级审批",
+            node_order=2,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_SECOND,
         )
 
     def test_create_workflow_request(self):
@@ -168,26 +188,40 @@ class WorkflowRequestTests(APITestCase):
         self.assertEqual(workflow.status, WorkflowRequest.STATUS_CANCELLED)
 
     def test_operation_logs_are_created_for_submit_and_approve(self):
+        single_template = WorkflowTemplate.objects.create(
+            name="一级审批流程",
+            code="single_approval_for_log_test",
+        )
+
+        WorkflowTemplateNode.objects.create(
+            template=single_template,
+            node_name="一级审批",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+        )
         workflow = WorkflowRequest.objects.create(
             request_type="payment",
             title="测试打款申请",
             applicant=self.applicant,
             current_approver=self.approver,
+            template=single_template,
         )
 
         self.client.force_authenticate(user=self.applicant)
-        self.client.post(
+        submit_response = self.client.post(
             f"/api/workflows/requests/{workflow.id}/submit/",
             {"comment": "提交审批"},
             format="json",
         )
+        self.assertEqual(submit_response.status_code, 200)
 
         self.client.force_authenticate(user=self.approver)
-        self.client.post(
+        approve_response  = self.client.post(
             f"/api/workflows/requests/{workflow.id}/approve/",
             {"comment": "同意"},
             format="json",
         )
+        self.assertEqual(approve_response.status_code, 200)
 
         actions = list(
             WorkflowOperationLog.objects.filter(workflow=workflow)
@@ -210,6 +244,24 @@ class PaymentOrderTests(APITestCase):
         self.admin = User.objects.create_superuser(
             username="payment_admin",
             password="123456",
+        )
+        self.template = WorkflowTemplate.objects.create(
+            name="付款审批流程",
+            code="payment_approval",
+        )
+
+        WorkflowTemplateNode.objects.create(
+            template=self.template,
+            node_name="一级审批",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+        )
+
+        WorkflowTemplateNode.objects.create(
+            template=self.template,
+            node_name="二级审批",
+            node_order=2,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_SECOND,
         )
 
     def test_applicant_can_create_payment_order(self):
@@ -483,6 +535,7 @@ class PaymentOrderTests(APITestCase):
             applicant=self.applicant,
             current_approver=self.approver,
             second_approver=second_approver,
+            template=self.template,
             status=WorkflowRequest.STATUS_PENDING,
         )
 
@@ -528,7 +581,168 @@ class PaymentOrderTests(APITestCase):
 
         self.assertEqual(first_task.status, WorkflowTask.STATUS_APPROVED)
         self.assertEqual(second_task.status, WorkflowTask.STATUS_APPROVED)
-        
     
+    def test_submit_uses_workflow_template_first_node(self):
+        template = WorkflowTemplate.objects.create(
+            name="付款审批流程",
+            code="payment_approval_first_node_test",
+        )
+        WorkflowTemplateNode.objects.create(
+            template=template,
+            node_name="主管审批",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+        )
+
+        workflow = WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="模板审批申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+            template=template,
+        )
+
+        self.client.force_authenticate(user=self.applicant)
+
+        response = self.client.post(
+            f"/api/workflows/requests/{workflow.id}/submit/",
+            {"comment": "提交审批"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        task = WorkflowTask.objects.get(workflow=workflow, node_order=1)
+        self.assertEqual(task.node_name, "主管审批")
+        self.assertEqual(task.approver, self.approver)
+
+    def test_template_two_level_approval(self):
+        second_approver = User.objects.create_user(
+            username="template_second_approver",
+            password="123456",
+        )
+
+        template = WorkflowTemplate.objects.create(
+            name="付款审批流程",
+            code="payment_approval_template_test",
+        )
+        WorkflowTemplateNode.objects.create(
+            template=template,
+            node_name="主管审批",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+        )
+        WorkflowTemplateNode.objects.create(
+            template=template,
+            node_name="老板审批",
+            node_order=2,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_SECOND,
+        )
+
+        workflow = WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="模板两级审批申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+            second_approver=second_approver,
+            template=template,
+            status=WorkflowRequest.STATUS_PENDING,
+        )
+
+        WorkflowTask.objects.create(
+            workflow=workflow,
+            node_name="主管审批",
+            node_order=1,
+            approver=self.approver,
+        )
+
+        self.client.force_authenticate(user=self.approver)
+        first_response = self.client.post(
+            f"/api/workflows/requests/{workflow.id}/approve/",
+            {"comment": "主管同意"},
+            format="json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+
+        second_task = WorkflowTask.objects.get(workflow=workflow, node_order=2)
+        self.assertEqual(second_task.node_name, "老板审批")
+        self.assertEqual(second_task.approver, second_approver)
+
+        self.client.force_authenticate(user=second_approver)
+        second_response = self.client.post(
+            f"/api/workflows/requests/{workflow.id}/approve/",
+            {"comment": "老板同意"},
+            format="json",
+        )
+
+        self.assertEqual(second_response.status_code, 200)
+
+        workflow.refresh_from_db()
+        self.assertEqual(workflow.status, WorkflowRequest.STATUS_APPROVED)
+    
+class WorkflowTemplateApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="template_user",
+            password="123456",
+        )
+        self.admin = User.objects.create_superuser(
+            username="template_admin",
+            password="123456",
+        )
+
+    def test_normal_user_can_list_active_templates(self):
+        active_template = WorkflowTemplate.objects.create(
+            name="启用模板",
+            code="active_template",
+            is_active=True,
+        )
+        WorkflowTemplateNode.objects.create(
+            template=active_template,
+            node_name="一级审批",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+        )
+        WorkflowTemplate.objects.create(
+            name="停用模板",
+            code="inactive_template",
+            is_active=False,
+        )
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get("/api/workflows/templates/")
+
+        self.assertEqual(response.status_code, 200)
+        items = response.data["results"]
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["code"], "active_template")
+        self.assertEqual(items[0]["nodes"][0]["node_name"], "一级审批")
+
+    def test_admin_can_list_all_templates(self):
+        WorkflowTemplate.objects.create(
+            name="启用模板",
+            code="active_template",
+            is_active=True,
+        )
+        WorkflowTemplate.objects.create(
+            name="停用模板",
+            code="inactive_template",
+            is_active=False,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get("/api/workflows/templates/")
+
+        self.assertEqual(response.status_code, 200)
+
+        items = response.data["results"]
+        codes = {item["code"] for item in items}
+        self.assertEqual(codes, {"active_template", "inactive_template"})
+
+        
+
 
     
