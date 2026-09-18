@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import WorkflowOperationLog, WorkflowRequest
+from .models import PaymentOrder, WorkflowOperationLog, WorkflowRequest
 
 class WorkflowOperationLogSerializer(serializers.ModelSerializer):
     # source="operator.username"： 从 operator 这个关联用户对象里取 username。
@@ -60,3 +60,37 @@ class WorkflowRequestSerializer(serializers.ModelSerializer):
 
 class WorkflowActionSerializer(serializers.Serializer):
     comment = serializers.CharField(required=False, allow_blank=True, default="")
+
+class PaymentOrderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentOrder
+        fields = [
+            "id",
+            "workflow",
+            "order_no",
+            "amount",
+            "pay_method",
+            "status",
+            "paid_at",
+            "confirmed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "order_no",
+            "status",
+            "paid_at",
+            "confirmed_at",
+            "created_at",
+            "updated_at",
+        ]
+
+class CreatePaymentOrderSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    pay_method = serializers.ChoiceField(choices=PaymentOrder.METHOD_CHOICES)
+
+class PaymentActionSerializer(serializers.Serializer):
+    comment = serializers.CharField(required=False, allow_blank=True, default="")
+
+    

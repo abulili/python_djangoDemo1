@@ -9,8 +9,15 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import WorkflowOperationLog, WorkflowRequest
-from .serializers import WorkflowActionSerializer, WorkflowRequestSerializer
+from .models import PaymentOrder, WorkflowOperationLog, WorkflowRequest
+from .serializers import (
+    CreatePaymentOrderSerializer,
+    PaymentActionSerializer,
+    PaymentOrderSerializer,
+    WorkflowActionSerializer,
+    WorkflowRequestSerializer,
+)
+import uuid
 
 class WorkflowRequestViewSet(viewsets.ModelViewSet):
     serializer_class = WorkflowRequestSerializer
@@ -272,5 +279,187 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
             "message": "取消成功",
             "data": self.get_serializer(workflow).data,
         })
+
+    @action(detail=True, methods=["post"], url_path="create-payment")
+    def create_payment(self, request, pk=None):
+        workflow = self.get_object()
+
+        if workflow.applicant_id != request.user.id:
+            return Response({
+                "code": 403,
+                "message": "只有申请人可以创建支付订单",
+                "data": None,
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        if workflow.request_type != WorkflowRequest.TYPE_PAYMENT:
+            return Response({
+                "code": 400,
+                "message": "只有打款申请可以创建支付订单",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # hasattr(workflow, "payment_order") 因为设置了related_name="payment_order"
+        if hasattr(workflow, "payment_order"):
+            return Response({
+                "code": 400,
+                "message": "该申请已经存在支付订单",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = CreatePaymentOrderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            order = PaymentOrder.objects.create(
+                workflow=workflow,
+                order_no=f"PAY{timezone.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:8]}",
+                amount=serializer.validated_data["amount"],
+                pay_method=serializer.validated_data["pay_method"],
+            )
+
+            WorkflowOperationLog.objects.create(
+                workflow=workflow,
+                operator=request.user,
+                action="create_payment",
+                from_status=workflow.status,
+                to_status=workflow.status,
+                comment="创建支付订单",
+                snapshot={
+                    "order_no": order.order_no,
+                    "amount": str(order.amount),
+                    "pay_method": order.pay_method,
+                },
+            )
+
+        return Response({
+            "code": 200,
+            "message": "支付订单创建成功",
+            "data": PaymentOrderSerializer(order).data,
+        })
+
+class PaymentOrderViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = PaymentOrderSerializer
+    permission_classes = [IsAuthenticated]   
+
+    def get_queryset(self):
+        user = self.request.user
+
+        queryset = PaymentOrder.objects.select_related(
+            "workflow",
+            # 2个跨表查询 这两个下划线 __ 可以理解成“往关联对象里面走一层”。
+            "workflow__applicant",
+            "workflow__current_approver",
+        )
+
+        if user.is_superuser:
+            return queryset
+        # 因为一对一的关系，所以PaymentOrder 可以通过 workflow 找到对应的 WorkflowRequest
+        return queryset.filter(
+            Q(workflow__applicant=user) | Q(workflow__current_approver=user)
+        ).distinct()
+
+    @action(detail=True, methods=["post"], url_path="mark-paid")
+    def mark_paid(self, request, pk=None):
+        order = self.get_object()
+        workflow = order.workflow
+
+        if workflow.applicant_id != request.user.id:
+            return Response({
+                "code": 403,
+                "message": "只有申请人可以标记已支付",
+                "data": None,
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        if order.status != PaymentOrder.STATUS_PENDING:
+            return Response({
+                "code": 400,
+                "message": "只有待支付订单可以标记已支付",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = PaymentActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            old_status = order.status
+            order.status = PaymentOrder.STATUS_USER_PAID
+            order.paid_at = timezone.now()
+            order.save(update_fields=["status", "paid_at", "updated_at"])
+
+            WorkflowOperationLog.objects.create(
+                workflow=workflow,
+                operator=request.user,
+                action="mark_paid",
+                from_status=workflow.status,
+                to_status=workflow.status,
+                comment=serializer.validated_data["comment"],
+                snapshot={
+                    "order_no": order.order_no,
+                    "from_payment_status": old_status,
+                    "to_payment_status": order.status,
+                },
+            )
+
+        return Response({
+            "code": 200,
+            "message": "已标记为用户已支付",
+            "data": self.get_serializer(order).data,
+        })
+
+    @action(detail=True, methods=["post"], url_path="confirm")
+    def confirm(self, request, pk=None):
+        order = self.get_object()
+        workflow = order.workflow
+
+        if not request.user.is_superuser:
+            return Response({
+                "code": 403,
+                "message": "只有管理员可以确认到账",
+                "data": None,
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        if order.status != PaymentOrder.STATUS_USER_PAID:
+            return Response({
+                "code": 400,
+                "message": "只有用户已支付订单可以确认到账",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = PaymentActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            old_payment_status = order.status
+            old_workflow_status = workflow.status
+
+            order.status = PaymentOrder.STATUS_CONFIRMED
+            order.confirmed_at = timezone.now()
+            order.save(update_fields=["status", "confirmed_at", "updated_at"])
+
+            if workflow.status == WorkflowRequest.STATUS_DRAFT:
+                workflow.status = WorkflowRequest.STATUS_PENDING
+                workflow.submitted_at = timezone.now()
+                workflow.save(update_fields=["status", "submitted_at", "updated_at"])
+
+            WorkflowOperationLog.objects.create(
+                workflow=workflow,
+                operator=request.user,
+                action="confirm_payment",
+                from_status=old_workflow_status,
+                to_status=workflow.status,
+                comment=serializer.validated_data["comment"],
+                snapshot={
+                    "order_no": order.order_no,
+                    "from_payment_status": old_payment_status,
+                    "to_payment_status": order.status,
+                },
+            )
+
+        return Response({
+            "code": 200,
+            "message": "确认到账成功",
+            "data": self.get_serializer(order).data,
+        })
+
     
-    
+

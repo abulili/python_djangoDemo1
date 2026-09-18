@@ -118,3 +118,54 @@ class WorkflowOperationLog(models.Model):
 
     def __str__(self):
         return f"{self.workflow_id} - {self.action}"
+
+class PaymentOrder(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_USER_PAID = "user_paid"
+    STATUS_CONFIRMED = "confirmed"
+    STATUS_CANCELLED = "cancelled"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "待支付"),
+        (STATUS_USER_PAID, "用户已支付"),
+        (STATUS_CONFIRMED, "已确认到账"),
+        (STATUS_CANCELLED, "已取消"),
+    ]
+
+    METHOD_ALIPAY = "alipay"
+    METHOD_WECHAT = "wechat"
+
+    METHOD_CHOICES = [
+        (METHOD_ALIPAY, "支付宝"),
+        (METHOD_WECHAT, "微信"),
+    ]
+
+    # 一个 WorkflowRequest 只能有一个 PaymentOrder
+    # 一个 PaymentOrder 也只属于一个 WorkflowRequest
+    # 如果以后要支持：分批付款/多次补款/多渠道支付 才一对多
+    workflow = models.OneToOneField(
+        WorkflowRequest,
+        on_delete=models.CASCADE,
+        related_name="payment_order",
+        verbose_name="关联工作流",
+    )
+    order_no = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="订单号")
+    amount = models.DecimalField(max_digits=12,decimal_places=2,verbose_name="金额")
+    pay_method = models.CharField(max_length=20, choices=METHOD_CHOICES, verbose_name="支付方式")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+        verbose_name="支付状态",
+    )
+    paid_at = models.DateTimeField(null=True, blank=True, verbose_name="用户支付时间")
+    confirmed_at = models.DateTimeField(null=True, blank=True, verbose_name="确认到账时间")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.order_no} - {self.status}"
