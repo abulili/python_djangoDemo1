@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import PaymentOrder, WorkflowOperationLog, WorkflowRequest
+from .models import PaymentOrder, WorkflowOperationLog, WorkflowRequest, WorkflowTask
 
 class WorkflowOperationLogSerializer(serializers.ModelSerializer):
     # source="operator.username"： 从 operator 这个关联用户对象里取 username。
@@ -46,11 +46,33 @@ class PaymentOrderSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+class WorkflowTaskSerializer(serializers.ModelSerializer):
+    approver_username = serializers.CharField(source="approver.username", read_only=True)
+
+    class Meta:
+        model = WorkflowTask
+        fields = [
+            "id",
+            "workflow",
+            "node_name",
+            "node_order",
+            "approver",
+            "approver_username",
+            "status",
+            "comment",
+            "handled_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+  
+
 class WorkflowRequestSerializer(serializers.ModelSerializer):
     applicant_username = serializers.CharField(source="applicant.username", read_only=True)
     current_approver_username = serializers.CharField(source="current_approver.username", read_only=True)
     operation_logs = WorkflowOperationLogSerializer(many=True, read_only=True)
     payment_order = PaymentOrderSerializer(read_only=True)
+    tasks = WorkflowTaskSerializer(many=True, read_only=True)
 
     class Meta:
         model = WorkflowRequest
@@ -67,6 +89,7 @@ class WorkflowRequestSerializer(serializers.ModelSerializer):
             "current_approver",
             "current_approver_username",
             "payment_order",
+            "tasks",
             "submitted_at",
             "finished_at",
             "created_at",
@@ -96,4 +119,5 @@ class CreatePaymentOrderSerializer(serializers.Serializer):
 class PaymentActionSerializer(serializers.Serializer):
     comment = serializers.CharField(required=False, allow_blank=True, default="")
 
-    
+
+

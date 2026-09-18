@@ -9,7 +9,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import PaymentOrder, WorkflowOperationLog, WorkflowRequest
+from .models import PaymentOrder, WorkflowOperationLog, WorkflowRequest, WorkflowTask
 from .serializers import (
     CreatePaymentOrderSerializer,
     PaymentActionSerializer,
@@ -28,9 +28,11 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
         queryset = WorkflowRequest.objects.select_related(
             "applicant",
             "current_approver",
+            "second_approver",
             "payment_order",
         ).prefetch_related(
             "operation_logs",
+            "tasks",
         )
         # prefetch_related：提前把“一对多/多对多”的关联数据查出来，减少数据库查询次数
         # 查工作流列表时，顺便把每个工作流的操作日志也批量查出来
@@ -41,7 +43,10 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
         # 普通用户只能看到：自己发起的申请或者需要自己审批的申请
         # Q(...) | Q(...) 里的 | 是“或者”。distinct() 是去重
         return queryset.filter(
-            Q(applicant=user) | Q(current_approver=user)
+            Q(applicant=user) |
+            Q(current_approver=user) |
+            Q(second_approver=user) |
+            Q(tasks__approver=user)
         ).distinct()
 
     def perform_create(self, serializer):
@@ -76,6 +81,7 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
         queryset = self.get_queryset().filter(
             current_approver=request.user,
             status=WorkflowRequest.STATUS_PENDING,
+            tasks__status=WorkflowTask.STATUS_PENDING,
         )
         serializer = self.get_serializer(queryset, many=True)
         return Response({
@@ -119,6 +125,13 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
         serializer = WorkflowActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        if workflow.current_approver is None:
+            return Response({
+                "code": 400,
+                "message": "请先指定审批人",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         # 开启事务
         # 保证：状态更新成功 + 操作日志写入成功 
         # 要么都成功，要么都失败。
@@ -129,6 +142,7 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
 
             if workflow.current_approver is None:
                 workflow.current_approver = request.user
+                
 
             # update_fields 这次只保存这几个字段
             workflow.save(update_fields=[
@@ -137,6 +151,12 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
                 "current_approver",
                 "updated_at",
             ])
+            WorkflowTask.objects.create(
+                workflow=workflow,
+                node_name="一级审批",
+                node_order=1,
+                approver=workflow.current_approver,
+            )
             WorkflowOperationLog.objects.create(
                 workflow=workflow,
                 operator=request.user,
@@ -156,13 +176,6 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
     def approve(self, request, pk=None):
         workflow = self.get_object()
 
-        if workflow.current_approver_id != request.user.id and not request.user.is_superuser:
-            return Response({
-                "code": 403,
-                "message": "只有当前审批人可以通过申请",
-                "data": None,
-            }, status=status.HTTP_403_FORBIDDEN)
-
         if workflow.status != WorkflowRequest.STATUS_PENDING:
             return Response({
                 "code": 400,
@@ -170,23 +183,77 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
                 "data": None,
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        current_task = workflow.tasks.filter(
+            status=WorkflowTask.STATUS_PENDING,
+        ).order_by("node_order").first()
+
+        if current_task is None:
+            return Response({
+                "code": 400,
+                "message": "当前没有待处理审批任务",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if current_task.approver_id != request.user.id and not request.user.is_superuser:
+            return Response({
+                "code": 403,
+                "message": "只有当前节点审批人可以通过申请",
+                "data": None,
+            }, status=status.HTTP_403_FORBIDDEN)
+
         serializer = WorkflowActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True) # 如果参数校验失败，直接抛出 DRF 的 400 错误响应
 
         with transaction.atomic():
             old_status = workflow.status
-            workflow.status = WorkflowRequest.STATUS_APPROVED
-            workflow.finished_at = timezone.now()
-            workflow.save(update_fields=["status", "finished_at", "updated_at"])
+            
+            current_task.status = WorkflowTask.STATUS_APPROVED
+            current_task.comment = serializer.validated_data["comment"]
+            current_task.handled_at = timezone.now()
+            current_task.save(update_fields=[
+                "status",
+                "comment",
+                "handled_at",
+                "updated_at",
+            ])
 
-            WorkflowOperationLog.objects.create(
-                workflow=workflow,
-                operator=request.user,
-                action=WorkflowOperationLog.ACTION_APPROVE,
-                from_status=old_status,
-                to_status=workflow.status,
-                comment=serializer.validated_data["comment"],
-            )
+            if current_task.node_order == 1 and workflow.second_approver_id:
+                WorkflowTask.objects.create(
+                    workflow=workflow,
+                    node_name="二级审批",
+                    node_order=2,
+                    approver=workflow.second_approver,
+                )
+
+                WorkflowOperationLog.objects.create(
+                    workflow=workflow,
+                    operator=request.user,
+                    action=WorkflowOperationLog.ACTION_APPROVE,
+                    from_status=old_status,
+                    to_status=workflow.status,
+                    comment=serializer.validated_data["comment"],
+                    snapshot={
+                        "approved_task_id": current_task.id,
+                        "next_node": "二级审批",
+                    },
+                )
+            else:
+                workflow.status = WorkflowRequest.STATUS_APPROVED
+                workflow.finished_at = timezone.now()
+                workflow.save(update_fields=["status", "finished_at", "updated_at"])
+
+                WorkflowOperationLog.objects.create(
+                    workflow=workflow,
+                    operator=request.user,
+                    action=WorkflowOperationLog.ACTION_APPROVE,
+                    from_status=old_status,
+                    to_status=workflow.status,
+                    comment=serializer.validated_data["comment"],
+                    snapshot={
+                        "approved_task_id": current_task.id,
+                        "finished": True,
+                    },
+                )
 
         return Response({
             "code": 200,
@@ -198,13 +265,6 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
     def reject(self, request, pk=None):
         workflow = self.get_object()
 
-        if workflow.current_approver_id != request.user.id and not request.user.is_superuser:
-            return Response({
-                "code": 403,
-                "message": "只有当前审批人可以驳回申请",
-                "data": None,
-            }, status=status.HTTP_403_FORBIDDEN)
-
         if workflow.status != WorkflowRequest.STATUS_PENDING:
             return Response({
                 "code": 400,
@@ -212,11 +272,40 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
                 "data": None,
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        current_task = workflow.tasks.filter(
+            status=WorkflowTask.STATUS_PENDING,
+        ).order_by("node_order").first()
+
+        if current_task is None:
+            return Response({
+                "code": 400,
+                "message": "当前没有待处理审批任务",
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if current_task.approver_id != request.user.id and not request.user.is_superuser:
+            return Response({
+                "code": 403,
+                "message": "只有当前节点审批人可以驳回申请",
+                "data": None,
+            }, status=status.HTTP_403_FORBIDDEN)
+
         serializer = WorkflowActionSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        serializer.is_valid(raise_exception=True) # 如果参数校验失败，直接抛出 DRF 的 400 错误响应
 
         with transaction.atomic():
             old_status = workflow.status
+            
+            current_task.status = WorkflowTask.STATUS_REJECTED
+            current_task.comment = serializer.validated_data["comment"]
+            current_task.handled_at = timezone.now()
+            current_task.save(update_fields=[
+                "status",
+                "comment",
+                "handled_at",
+                "updated_at",
+            ])
+
             workflow.status = WorkflowRequest.STATUS_REJECTED
             workflow.finished_at = timezone.now()
             workflow.save(update_fields=["status", "finished_at", "updated_at"])
@@ -228,6 +317,10 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
                 from_status=old_status,
                 to_status=workflow.status,
                 comment=serializer.validated_data["comment"],
+                snapshot={
+                    "rejected_task_id": current_task.id,
+                    "node_order": current_task.node_order,
+                },
             )
 
         return Response({
@@ -265,6 +358,13 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
             workflow.status = WorkflowRequest.STATUS_CANCELLED
             workflow.finished_at = timezone.now()
             workflow.save(update_fields=["status", "finished_at", "updated_at"])
+
+            workflow.tasks.filter(
+                status=WorkflowTask.STATUS_PENDING,
+            ).update(
+                status=WorkflowTask.STATUS_CANCELLED,
+                handled_at=timezone.now(),
+            )
 
             WorkflowOperationLog.objects.create(
                 workflow=workflow,

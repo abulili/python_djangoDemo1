@@ -2,7 +2,7 @@ from django.test import TestCase
 
 # Create your tests here.
 from django.contrib.auth import get_user_model
-from .models import WorkflowOperationLog, WorkflowRequest, PaymentOrder
+from .models import WorkflowOperationLog, WorkflowRequest, PaymentOrder, WorkflowTask
 from rest_framework.test import APITestCase
 
 User = get_user_model()
@@ -72,6 +72,12 @@ class WorkflowRequestTests(APITestCase):
             current_approver=self.approver,
             status=WorkflowRequest.STATUS_PENDING,
         )
+        WorkflowTask.objects.create(
+            workflow=workflow,
+            node_name="一级审批",
+            node_order=1,
+            approver=self.approver,
+        )
 
         self.client.force_authenticate(user=self.approver)
 
@@ -118,6 +124,12 @@ class WorkflowRequestTests(APITestCase):
             applicant=self.applicant,
             current_approver=self.approver,
             status=WorkflowRequest.STATUS_PENDING,
+        )
+        WorkflowTask.objects.create(
+            workflow=workflow,
+            node_name="一级审批",
+            node_order=1,
+            approver=self.approver,
         )
 
         self.client.force_authenticate(user=self.approver)
@@ -435,5 +447,88 @@ class PaymentOrderTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+    def test_submit_creates_first_workflow_task(self):
+        workflow = WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="两级审批申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+        )
+
+        self.client.force_authenticate(user=self.applicant)
+
+        response = self.client.post(
+            f"/api/workflows/requests/{workflow.id}/submit/",
+            {"comment": "提交审批"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        task = WorkflowTask.objects.get(workflow=workflow, node_order=1)
+        self.assertEqual(task.node_name, "一级审批")
+        self.assertEqual(task.approver, self.approver)
+        self.assertEqual(task.status, WorkflowTask.STATUS_PENDING)
+
+    def test_two_level_approval_finishes_after_second_approver(self):
+        second_approver = User.objects.create_user(
+            username="second_approver",
+            password="123456",
+        )
+
+        workflow = WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="两级审批申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+            second_approver=second_approver,
+            status=WorkflowRequest.STATUS_PENDING,
+        )
+
+        WorkflowTask.objects.create(
+            workflow=workflow,
+            node_name="一级审批",
+            node_order=1,
+            approver=self.approver,
+        )
+
+        self.client.force_authenticate(user=self.approver)
+
+        first_response = self.client.post(
+            f"/api/workflows/requests/{workflow.id}/approve/",
+            {"comment": "一级通过"},
+            format="json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+
+        workflow.refresh_from_db()
+        self.assertEqual(workflow.status, WorkflowRequest.STATUS_PENDING)
+
+        second_task = WorkflowTask.objects.get(workflow=workflow, node_order=2)
+        self.assertEqual(second_task.approver, second_approver)
+        self.assertEqual(second_task.status, WorkflowTask.STATUS_PENDING)
+
+        self.client.force_authenticate(user=second_approver)
+
+        second_response = self.client.post(
+            f"/api/workflows/requests/{workflow.id}/approve/",
+            {"comment": "二级通过"},
+            format="json",
+        )
+
+        self.assertEqual(second_response.status_code, 200)
+
+        workflow.refresh_from_db()
+        self.assertEqual(workflow.status, WorkflowRequest.STATUS_APPROVED)
+
+        first_task = WorkflowTask.objects.get(workflow=workflow, node_order=1)
+        second_task.refresh_from_db()
+
+        self.assertEqual(first_task.status, WorkflowTask.STATUS_APPROVED)
+        self.assertEqual(second_task.status, WorkflowTask.STATUS_APPROVED)
+        
+    
 
     

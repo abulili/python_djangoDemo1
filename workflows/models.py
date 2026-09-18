@@ -64,7 +64,15 @@ class WorkflowRequest(models.Model):
         null=True,
         blank=True,
         related_name="pending_workflow_requests",
-        verbose_name="当前审批人",
+        verbose_name="一级审批人",
+    )
+    second_approver = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="second_pending_workflow_requests",
+        verbose_name="二级审批人",
     )
     submitted_at = models.DateTimeField(null=True, blank=True, verbose_name="提交时间")
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name="完成时间")
@@ -169,3 +177,52 @@ class PaymentOrder(models.Model):
 
     def __str__(self):
         return f"{self.order_no} - {self.status}"
+
+class WorkflowTask(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CANCELLED = "cancelled"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "待处理"),
+        (STATUS_APPROVED, "已通过"),
+        (STATUS_REJECTED, "已驳回"),
+        (STATUS_CANCELLED, "已取消"),
+    ]
+
+    workflow = models.ForeignKey(
+        WorkflowRequest,
+        on_delete=models.CASCADE,
+        related_name="tasks",
+        verbose_name="工作流申请",
+    )
+    node_name = models.CharField(max_length=100, verbose_name="节点名称")
+    # 非负整数的数字字段
+    node_order = models.PositiveIntegerField(verbose_name="节点顺序")
+    approver = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="workflow_tasks",
+        verbose_name="审批人",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+        verbose_name="任务状态",
+    )
+    comment = models.TextField(blank=True, default="", verbose_name="审批意见")
+    handled_at = models.DateTimeField(null=True, blank=True, verbose_name="处理时间")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        ordering = ["node_order", "id"]
+        unique_together = ["workflow", "node_order"]
+
+    def __str__(self):
+        return f"{self.workflow_id} - {self.node_name} - {self.status}"
