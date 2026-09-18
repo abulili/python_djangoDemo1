@@ -21,46 +21,6 @@ class WorkflowOperationLogSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
-class WorkflowRequestSerializer(serializers.ModelSerializer):
-    applicant_username = serializers.CharField(source="applicant.username", read_only=True)
-    current_approver_username = serializers.CharField(source="current_approver.username", read_only=True)
-    operation_logs = WorkflowOperationLogSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = WorkflowRequest
-        fields = [
-            "id",
-            "request_type",
-            "title",
-            "description",
-            "amount",
-            "business_data",
-            "status",
-            "applicant",
-            "applicant_username",
-            "current_approver",
-            "current_approver_username",
-            "submitted_at",
-            "finished_at",
-            "created_at",
-            "updated_at",
-            "operation_logs",
-        ]
-        read_only_fields = [
-            "id",
-            "status",
-            "applicant",
-            "applicant_username",
-            "submitted_at",
-            "finished_at",
-            "created_at",
-            "updated_at",
-            "operation_logs",
-        ]
-
-class WorkflowActionSerializer(serializers.Serializer):
-    comment = serializers.CharField(required=False, allow_blank=True, default="")
-
 class PaymentOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentOrder
@@ -85,6 +45,49 @@ class PaymentOrderSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+class WorkflowRequestSerializer(serializers.ModelSerializer):
+    applicant_username = serializers.CharField(source="applicant.username", read_only=True)
+    current_approver_username = serializers.CharField(source="current_approver.username", read_only=True)
+    operation_logs = WorkflowOperationLogSerializer(many=True, read_only=True)
+    payment_order = PaymentOrderSerializer(read_only=True)
+
+    class Meta:
+        model = WorkflowRequest
+        fields = [
+            "id",
+            "request_type",
+            "title",
+            "description",
+            "amount",
+            "business_data",
+            "status",
+            "applicant",
+            "applicant_username",
+            "current_approver",
+            "current_approver_username",
+            "payment_order",
+            "submitted_at",
+            "finished_at",
+            "created_at",
+            "updated_at",
+            "operation_logs",
+        ]
+        read_only_fields = [
+            "id",
+            "status",
+            "applicant",
+            "applicant_username",
+            "submitted_at",
+            "finished_at",
+            "created_at",
+            "updated_at",
+            "operation_logs",
+        ]
+
+class WorkflowActionSerializer(serializers.Serializer):
+    comment = serializers.CharField(required=False, allow_blank=True, default="")
+
 
 class CreatePaymentOrderSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=12, decimal_places=2)

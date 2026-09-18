@@ -28,6 +28,7 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
         queryset = WorkflowRequest.objects.select_related(
             "applicant",
             "current_approver",
+            "payment_order",
         ).prefetch_related(
             "operation_logs",
         )

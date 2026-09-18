@@ -348,3 +348,92 @@ class PaymentOrderTests(APITestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_create_payment_order_writes_operation_log(self):
+        workflow = WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="测试付款申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+            amount="100.00",
+        )
+
+        self.client.force_authenticate(user=self.applicant)
+
+        response = self.client.post(
+            f"/api/workflows/requests/{workflow.id}/create-payment/",
+            {
+                "amount": "100.00",
+                "pay_method": PaymentOrder.METHOD_ALIPAY,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        log = WorkflowOperationLog.objects.get(
+            workflow=workflow,
+            action="create_payment",
+        )
+
+        self.assertEqual(log.operator, self.applicant)
+        self.assertEqual(log.snapshot["pay_method"], PaymentOrder.METHOD_ALIPAY)
+
+    def test_confirm_payment_writes_operation_log(self):
+        workflow = WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="测试付款申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+            amount="100.00",
+            status=WorkflowRequest.STATUS_DRAFT,
+        )
+        order = PaymentOrder.objects.create(
+            workflow=workflow,
+            order_no="PAY_CONFIRM_LOG",
+            amount="100.00",
+            pay_method=PaymentOrder.METHOD_ALIPAY,
+            status=PaymentOrder.STATUS_USER_PAID,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post(
+            f"/api/workflows/payments/{order.id}/confirm/",
+            {"comment": "确认到账"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        log = WorkflowOperationLog.objects.get(
+            workflow=workflow,
+            action="confirm_payment",
+        )
+
+        self.assertEqual(log.operator, self.admin)
+        self.assertEqual(log.from_status, WorkflowRequest.STATUS_DRAFT)
+        self.assertEqual(log.to_status, WorkflowRequest.STATUS_PENDING)
+        self.assertEqual(log.snapshot["to_payment_status"], PaymentOrder.STATUS_CONFIRMED)
+
+    def test_cannot_create_payment_order_for_non_payment_request(self):
+        workflow = WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_GENERAL,
+            title="普通申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+        )
+
+        self.client.force_authenticate(user=self.applicant)
+
+        response = self.client.post(
+            f"/api/workflows/requests/{workflow.id}/create-payment/",
+            {
+                "amount": "100.00",
+                "pay_method": PaymentOrder.METHOD_ALIPAY,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    
