@@ -123,8 +123,8 @@ REST_FRAMEWORK = {
     ],
     # 限流速率配置，'user': '60/minute' 表示每个用户每分钟最多请求 60 次
     'DEFAULT_THROTTLE_RATES': {
-        "user": "20/minute",
-        "anon": "10/minute",
+        "user": "120/minute",
+        "anon": "30/minute",
         "ai_call": "20/minute",
         "task_status": "120/minute",
     },
