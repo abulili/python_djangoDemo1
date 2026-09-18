@@ -37,6 +37,7 @@ router.register(r"ai-trace-step-logs", AiTraceStepLogViewSet, basename="rag-trac
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include(router.urls)),
+    path("api/workflows/", include("workflows.urls")),
     path('api/my-custom/', MyCustomAPIView.as_view()),
     # path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/', SingleSessionTokenObtainPairView.as_view(), name='token_obtain_pair'),
