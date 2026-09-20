@@ -274,7 +274,14 @@ class WorkflowTemplateNode(models.Model):
     is_active = models.BooleanField(default=True, db_index=True, verbose_name="是否启用")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
-
+    min_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name="最低适用金额",
+    )
+    
     class Meta:
         ordering = ["node_order", "id"]
         unique_together = ["template", "node_order"]

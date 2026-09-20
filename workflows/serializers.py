@@ -132,6 +132,7 @@ class WorkflowTemplateNodeSerializer(serializers.ModelSerializer):
             "node_name",
             "node_order",
             "approver_field",
+            "min_amount",
             "is_active",
             "created_at",
             "updated_at",

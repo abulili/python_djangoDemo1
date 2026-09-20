@@ -39,6 +39,15 @@ def get_approver_from_workflow(workflow, approver_field):
 
     return None
 
+def is_node_applicable(workflow, node):
+    if node.min_amount is None:
+        return True
+
+    if workflow.amount is None:
+        return False
+
+    return workflow.amount >= node.min_amount
+
 class WorkflowRequestViewSet(viewsets.ModelViewSet):
     serializer_class = WorkflowRequestSerializer
     permission_classes = [IsAuthenticated]
@@ -164,7 +173,13 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         # 找模板的第一个节点。
-        first_node = template.nodes.filter(is_active=True).order_by("node_order").first()
+        first_node = None
+
+        for node in template.nodes.filter(is_active=True).order_by("node_order"):
+            # 以及审批min_amount = None
+            if is_node_applicable(workflow, node):
+                first_node = node
+                break
 
         if first_node is None:
             return Response({
@@ -267,10 +282,14 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
             next_node = None
 
             if workflow.template_id:
-                next_node = workflow.template.nodes.filter(
+                for node in workflow.template.nodes.filter(
                     is_active=True,
                     node_order__gt=current_task.node_order,
-                ).order_by("node_order").first()
+                ).order_by("node_order"):
+                    # 从节点后面继续找，只找金额条件的节点
+                    if is_node_applicable(workflow, node):
+                        next_node = node
+                        break
 
             if next_node:
                 next_approver = get_approver_from_workflow(workflow, next_node.approver_field)
