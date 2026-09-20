@@ -22,6 +22,8 @@ from .serializers import (
 )
 import uuid
 
+from rest_framework.permissions import BasePermission, IsAuthenticated
+
 def get_default_template():
     # 去数据库里找 code=payment_approval 且启用中的流程模板,找不到返回None
     return WorkflowTemplate.objects.filter(
@@ -43,10 +45,18 @@ def is_node_applicable(workflow, node):
     if node.min_amount is None:
         return True
 
+    # 如果这个节点有金额门槛，但是申请单自己没有金额，那这个节点不适用。
     if workflow.amount is None:
         return False
 
     return workflow.amount >= node.min_amount
+
+class IsAdminOrReadOnly(BasePermission):
+    def has_permission(self, request, view):
+        if request.method in ["GET", "HEAD", "OPTIONS"]:
+            return request.user and request.user.is_authenticated
+
+        return request.user and request.user.is_superuser
 
 class WorkflowRequestViewSet(viewsets.ModelViewSet):
     serializer_class = WorkflowRequestSerializer
@@ -647,7 +657,7 @@ class PaymentOrderViewSet(viewsets.ReadOnlyModelViewSet):
 
 class WorkflowTemplateViewSet(viewsets.ModelViewSet):
     serializer_class = WorkflowTemplateSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
         queryset = WorkflowTemplate.objects.prefetch_related("nodes")
@@ -656,6 +666,26 @@ class WorkflowTemplateViewSet(viewsets.ModelViewSet):
             return queryset
 
         return queryset.filter(is_active=True)
+
+class WorkflowTemplateNodeViewSet(viewsets.ModelViewSet):
+    serializer_class = WorkflowTemplateNodeSerializer
+    permission_classes = [IsAdminOrReadOnly]
+
+    def get_queryset(self):
+        queryset = WorkflowTemplateNode.objects.select_related("template")
+
+        template_id = self.request.query_params.get("template")
+        if template_id:
+            queryset = queryset.filter(template_id=template_id)
+
+        if self.request.user.is_superuser:
+            return queryset
+
+        return queryset.filter(
+            is_active=True,
+            template__is_active=True,
+        )
+
 
 
 

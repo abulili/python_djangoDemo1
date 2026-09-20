@@ -24,6 +24,9 @@ from django.utils import timezone
 from django.conf import settings
 from django.core.cache import cache
 
+from rest_framework.permissions import IsAuthenticated
+from .serializers import CurrentUserSerializer
+
 # Create your views here.
 class UserRegisterView(APIView):
     # ✅ 关键：移除 JWT 认证，只保留 Session 认证
@@ -269,3 +272,15 @@ class RequestRiskEventViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.filter(status_code=status_code)
 
         return queryset
+
+class CurrentUserView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        serializer = CurrentUserSerializer(request.user)
+
+        return Response({
+            "code": 200,
+            "message": "ok",
+            "data": serializer.data,
+        })

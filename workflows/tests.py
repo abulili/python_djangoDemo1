@@ -880,7 +880,161 @@ class WorkflowTemplateApiTests(APITestCase):
         workflow.refresh_from_db()
         self.assertEqual(workflow.status, WorkflowRequest.STATUS_APPROVED)
 
+class WorkflowTemplateNodeApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="template_node_user",
+            password="123456",
+        )
+        self.admin = User.objects.create_superuser(
+            username="template_node_admin",
+            password="123456",
+        )
+        self.template = WorkflowTemplate.objects.create(
+            name="节点测试流程",
+            code="template_node_test",
+        )
+
+    def test_admin_can_create_template_node(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post("/api/workflows/template-nodes/", {
+            "template": self.template.id,
+            "node_name": "一级审批",
+            "node_order": 1,
+            "approver_field": WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+            "min_amount": None,
+            "is_active": True,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201)
+
+        node = WorkflowTemplateNode.objects.get(template=self.template)
+        self.assertEqual(node.node_name, "一级审批")
+        self.assertEqual(node.node_order, 1)
+
+    def test_can_filter_nodes_by_template(self):
+        other_template = WorkflowTemplate.objects.create(
+            name="其他流程",
+            code="other_template_node_test",
+        )
+
+        WorkflowTemplateNode.objects.create(
+            template=self.template,
+            node_name="一级审批",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+        )
+        WorkflowTemplateNode.objects.create(
+            template=other_template,
+            node_name="其他审批",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.get(
+            f"/api/workflows/template-nodes/?template={self.template.id}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        items = response.data["results"] if "results" in response.data else response.data
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["node_name"], "一级审批")
+
+    def test_normal_user_only_sees_active_nodes(self):
+        WorkflowTemplateNode.objects.create(
+            template=self.template,
+            node_name="启用节点",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+            is_active=True,
+        )
+        WorkflowTemplateNode.objects.create(
+            template=self.template,
+            node_name="停用节点",
+            node_order=2,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_SECOND,
+            is_active=False,
+        )
+
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get("/api/workflows/template-nodes/")
+
+        self.assertEqual(response.status_code, 200)
+
+        items = response.data["results"] if "results" in response.data else response.data
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["node_name"], "启用节点")
+
+    def test_normal_user_cannot_create_template(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post("/api/workflows/templates/", {
+            "name": "普通用户创建模板",
+            "code": "normal_user_template",
+            "description": "",
+            "is_active": True,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_create_template(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post("/api/workflows/templates/", {
+            "name": "管理员创建模板",
+            "code": "admin_template",
+            "description": "管理员创建",
+            "is_active": True,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201)
+
+        template = WorkflowTemplate.objects.get(code="admin_template")
+        self.assertEqual(template.name, "管理员创建模板")
+
+    def test_normal_user_cannot_create_template_node(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post("/api/workflows/template-nodes/", {
+            "template": self.template.id,
+            "node_name": "普通用户节点",
+            "node_order": 1,
+            "approver_field": WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+            "is_active": True,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_update_template_node(self):
+        node = WorkflowTemplateNode.objects.create(
+            template=self.template,
+            node_name="一级审批",
+            node_order=1,
+            approver_field=WorkflowTemplateNode.APPROVER_FIELD_CURRENT,
+            is_active=True,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.patch(
+            f"/api/workflows/template-nodes/{node.id}/",
+            {
+                "node_name": "主管审批",
+                "min_amount": "1000.00",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        node.refresh_from_db()
+        self.assertEqual(node.node_name, "主管审批")
+        self.assertEqual(str(node.min_amount), "1000.00")
+
+
             
-
-
-        

@@ -9,6 +9,10 @@ from rest_framework_simplejwt.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.tokens import RefreshToken
 from .utils import get_client_ip
 
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+
 
 class UserRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[
@@ -259,5 +263,16 @@ class RequestRiskEventSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
-    
+class CurrentUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "email",
+            "is_staff",
+            "is_superuser"
+        ]
+        read_only_fields = fields
+
 

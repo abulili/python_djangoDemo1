@@ -16,6 +16,10 @@ from users.notifications import (
 from unittest.mock import Mock, patch
 from .utils import record_request_risk_event, apply_security_auto_action
 
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+
 # Create your tests here.
 @override_settings(
     REST_FRAMEWORK={
@@ -1027,4 +1031,37 @@ class SecurityAutoActionTests(TestCase):
         self.assertEqual(result["reason"], "risk_type_not_allowed")
         self.assertFalse(IPBlockRule.objects.filter(ip_address="9.9.9.9").exists())
 
+class CurrentUserApiTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="current_user",
+            password="123456",
+            email="current@example.com",
+        )
+        self.admin = User.objects.create_superuser(
+            username="current_admin",
+            password="123456",
+            email="admin@example.com",
+        )
+
+    def test_authenticated_user_can_get_current_user(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+
+        response = client.get("/api/users/me/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["username"], "current_user")
+        self.assertFalse(response.data["data"]["is_superuser"])
+
+    def test_admin_can_get_current_user_flags(self):
+        client = APIClient()
+        client.force_authenticate(user=self.admin)
+
+        response = client.get("/api/users/me/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["username"], "current_admin")
+        self.assertTrue(response.data["data"]["is_staff"])
+        self.assertTrue(response.data["data"]["is_superuser"])
 

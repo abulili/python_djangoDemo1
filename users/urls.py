@@ -2,7 +2,7 @@ from django.urls import path,include
 
 from .views import (UserRegisterView, LogoutView, LoginEventViewSet, 
 ForceLogoutUsersView, BanUsersView, UnbanUsersView, IPBlockRuleViewSet,
-RequestRiskEventViewSet
+RequestRiskEventViewSet,CurrentUserView
 )
 
 from rest_framework.routers import DefaultRouter
@@ -20,6 +20,7 @@ urlpatterns = [
     path('force-logout/', ForceLogoutUsersView.as_view(), name='force-logout'),
     path('ban/', BanUsersView.as_view(), name='ban-users'),
     path('unban/', UnbanUsersView.as_view(), name='unban-users'),
+    path("me/", CurrentUserView.as_view(), name="current-user"),
     path('', include(router.urls)),
 ]
     
