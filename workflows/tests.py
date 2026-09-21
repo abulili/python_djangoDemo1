@@ -613,6 +613,72 @@ class WorkflowRequestTests(APITestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["title"], "默认模板申请")
 
+    def test_workflow_stats_returns_status_counts(self):
+        WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="待审批申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+            status=WorkflowRequest.STATUS_PENDING,
+            amount="100.00",
+        )
+        WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="已通过申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+            status=WorkflowRequest.STATUS_APPROVED,
+            amount="200.00",
+        )
+        WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_GENERAL,
+            title="已驳回申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+            status=WorkflowRequest.STATUS_REJECTED,
+        )
+
+        self.client.force_authenticate(user=self.applicant)
+
+        response = self.client.get("/api/workflows/requests/stats/")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["total"], 3)
+        self.assertEqual(data["pending"], 1)
+        self.assertEqual(data["approved"], 1)
+        self.assertEqual(data["rejected"], 1)
+        self.assertEqual(data["payment_total_amount"], "300.00")
+
+    def test_workflow_stats_only_counts_visible_requests(self):
+        other_user = User.objects.create_user(
+            username="stats_other_user",
+            password="123456",
+        )
+
+        WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="我的申请",
+            applicant=self.applicant,
+            current_approver=self.approver,
+            status=WorkflowRequest.STATUS_PENDING,
+        )
+        WorkflowRequest.objects.create(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="别人的申请",
+            applicant=other_user,
+            current_approver=other_user,
+            status=WorkflowRequest.STATUS_PENDING,
+        )
+
+        self.client.force_authenticate(user=self.applicant)
+
+        response = self.client.get("/api/workflows/requests/stats/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["total"], 1)
+
 
 class PaymentOrderTests(APITestCase):
     def setUp(self):

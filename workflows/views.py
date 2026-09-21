@@ -2,7 +2,7 @@ from django.shortcuts import render
 
 # Create your views here.
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Avg, Count, Q, Sum
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -547,6 +547,81 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
             "message": "支付订单创建成功",
             "data": PaymentOrderSerializer(order).data,
         })
+
+    @action(detail=False, methods=["get"], url_path="stats")
+    def stats(self, request):
+        queryset = self.get_queryset()
+
+        total = queryset.count()
+
+        """
+        只按照status 字段取值
+        按 status 分组后，统计每组有多少条
+        [
+            {"status": "pending", "count": 3},
+            {"status": "approved", "count": 5},
+            {"status": "rejected", "count": 1},
+        ]
+        把结果变成元组列表
+        [
+            ("pending", 3),
+            ("approved", 5),
+            ("rejected", 1),
+        ]
+        变成字典
+        {
+            "pending": 3,
+            "approved": 5,
+            "rejected": 1,
+        }
+        """
+        status_counts = dict(
+            queryset.values("status")
+            .annotate(count=Count("id"))
+            .values_list("status", "count")
+        )
+        """
+        过滤付款申请和金额不为空的
+        金额加起来取total_amount,也可能没金额就是0
+        """
+        payment_total_amount = queryset.filter(
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            amount__isnull=False,
+        ).aggregate(total_amount=Sum("amount"))["total_amount"] or 0
+
+        finished_workflows = queryset.filter(
+            submitted_at__isnull=False,
+            finished_at__isnull=False,
+        )
+
+        approval_seconds = []
+        # 循环每个已完成申请，获取时间差
+        for workflow in finished_workflows:
+            approval_seconds.append(
+                (workflow.finished_at - workflow.submitted_at).total_seconds()
+            )
+        # 计算平均审批时间
+        avg_approval_seconds = (
+            sum(approval_seconds) / len(approval_seconds)
+            if approval_seconds
+            else 0
+        )
+
+        return Response({
+            "code": 200,
+            "message": "ok",
+            "data": {
+                "total": total,
+                "draft": status_counts.get(WorkflowRequest.STATUS_DRAFT, 0),
+                "pending": status_counts.get(WorkflowRequest.STATUS_PENDING, 0),
+                "approved": status_counts.get(WorkflowRequest.STATUS_APPROVED, 0),
+                "rejected": status_counts.get(WorkflowRequest.STATUS_REJECTED, 0),
+                "cancelled": status_counts.get(WorkflowRequest.STATUS_CANCELLED, 0),
+                "payment_total_amount": str(payment_total_amount),
+                "avg_approval_seconds": round(avg_approval_seconds, 2),
+            },
+        })
+
 
 class PaymentOrderViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PaymentOrderSerializer
