@@ -64,7 +64,9 @@ from .services import (
     save_conversation_history,
     save_conversation_messages_to_db,
     calculate_cost,
-    call_ai_service
+    call_ai_service,
+    get_text_embedding,
+    cosine_similarity,
 )
 
 import re
@@ -265,6 +267,63 @@ def simple_keyword_score(query, text):
     
     return score
 
+def build_chunk_embedding(text):
+    try:
+        return get_text_embedding(text)
+    except Exception as e:
+        logger.warning("生成知识库切片向量失败: %s", e)
+        return []
+
+def score_knowledge_chunks(query, chunks, search_type="keyword"):
+    """
+    关键词检索：优点：准确、可解释、便宜   缺点：换个说法可能搜不到
+    向量检索：优点：能理解相近意思   缺点：可能召回看起来没关键词的内容，可解释性弱一些，需要 embedding 成本
+    混合检索：优点：两边都占一点，通常是工程里更常见的选择   缺点：要调权重，比如 vector_score * 3
+    """
+    search_type = search_type or "keyword"
+    query_embedding = []
+    
+    # 向量检索, 混合检索(关键词+向量)
+    if search_type in ["vector", "hybrid"]:
+        try:
+            query_embedding = get_text_embedding(query)
+        except Exception as exc:
+            logger.warning("生成查询向量失败: %s", exc)
+            query_embedding = []
+
+    scored_chunks = []
+
+    for chunk in chunks:
+        # 保留两个因为对RAG召回条件很重要，能知道为什么这条结果在前面
+        keyword_score = simple_keyword_score(query, chunk.content)
+        vector_score = cosine_similarity(query_embedding, chunk.embedding)
+
+        if search_type == "vector":
+            score = vector_score
+        elif search_type == "hybrid":
+            # keyword_score和vector_score量级不一样，keyword_score 可能是 1、2、3、4，vector_score 通常是 0.1 到 0.9
+            score = keyword_score + vector_score * 3
+        else:
+            score = keyword_score
+
+        if score > 0:
+            scored_chunks.append({
+                "id": chunk.id,
+                "document_id": chunk.document_id,
+                "document_title": chunk.document.title,
+                "chunk_index": chunk.chunk_index,
+                "content": chunk.content,
+                "score": score,
+                "keyword_score": keyword_score,
+                "vector_score": vector_score,
+            })
+
+    scored_chunks.sort(key=lambda item: item["score"], reverse=True)
+    return scored_chunks
+
+
+
+
 
 class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
     """知识库文档管理"""
@@ -285,6 +344,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
                 document=document,
                 content=chunk,
                 chunk_index=index,
+                embedding=build_chunk_embedding(chunk),
             )
             for index, chunk in enumerate(chunks)
         ])
@@ -297,7 +357,12 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         chunks = split_text_to_chunks(document.content)
 
         KnowledgeChunk.objects.bulk_create([
-            KnowledgeChunk(document=document, content=chunk, chunk_index=index)
+            KnowledgeChunk(
+                document=document, 
+                content=chunk, 
+                chunk_index=index,
+                embedding=build_chunk_embedding(chunk),
+            )
             for index, chunk in enumerate(chunks)
         ])
 
@@ -314,6 +379,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
 
         query = request.data.get('query', '')
         top_k = int(request.data.get('top_k', 3)) # 没传默认取3条内容返回
+        search_type = request.data.get("search_type", "keyword")
 
         if not query.strip():
             return error_response('请提供query',400)
@@ -333,18 +399,11 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             chunks = KnowledgeChunk.objects.select_related('document').filter(document__user=request.user)
 
         # 已经算过相关分数的知识库chunk
-        scored_chunks = []
-        for chunk in chunks:
-            score = simple_keyword_score(query, chunk.content)
-            if score > 0:
-                scored_chunks.append({
-                    "id": chunk.id,
-                    "document_id": chunk.document_id,
-                    "document_title": chunk.document.title,
-                    "chunk_index": chunk.chunk_index,
-                    "content": chunk.content,
-                    "score": score,
-                })
+        scored_chunks = score_knowledge_chunks(
+            query=query,
+            chunks=chunks,
+            search_type=search_type,
+        )
 
         # key=xxx => key=lambda item: item['score']： 排序时按每一项里面的 score 字段来排, lambda是临时小函数，专门写匿名函数
         # reverse=True： 从大到小排
@@ -354,6 +413,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "query": query,
             "top_k": top_k,
             "scored_chunks": scored_chunks[:top_k],
+            "search_type": search_type,
         })
 
     
@@ -366,6 +426,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         conversation_id = request.data.get('conversation_id')
         trace_id = getattr(request, "trace_id", "")
         request_id = request.data.get("request_id")
+        search_type = request.data.get("search_type", "keyword")
 
         if not query.strip():
             return error_response('请提供query', code=400)
@@ -431,19 +492,11 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         else:
             chunks = KnowledgeChunk.objects.select_related('document').filter(document__user=request.user)
 
-        scored_chunks = []
-
-        for chunk in chunks:
-            score = simple_keyword_score(query, chunk.content)
-            if score > 0:
-                scored_chunks.append({
-                    "id": chunk.id,
-                    "document_id": chunk.document_id,
-                    "document_title": chunk.document.title,
-                    "chunk_index": chunk.chunk_index,
-                    "content": chunk.content,
-                    "score": score,
-                })
+        scored_chunks = score_knowledge_chunks(
+            query=query,
+            chunks=chunks,
+            search_type=search_type,
+        )
         scored_chunks.sort(key=lambda item: item['score'], reverse=True)
         top_chunks = scored_chunks[:top_k]
 
@@ -458,6 +511,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
                 "hit_count": len(top_chunks),
                 "top_k": top_k,
                 "chunk_ids": [item["id"] for item in top_chunks],
+                "search_type": search_type,
             }
         )
 

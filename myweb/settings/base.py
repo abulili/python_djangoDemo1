@@ -293,3 +293,8 @@ SECURITY_AUTO_BLOCK_IP_RISK_TYPES = [
     ).split(",")
     if item.strip()
 ]
+# embedding 模型配置
+EMBEDDING_ENABLED = os.getenv("EMBEDDING_ENABLED", "false").lower() == "true"
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "")
+DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small")

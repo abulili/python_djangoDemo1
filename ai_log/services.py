@@ -7,11 +7,57 @@ import json
 from .models import PromptTemplate,Conversation, ConversationMessage
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import timezone as datetime_timezone
+import math
 
 logger = logging.getLogger(__name__)
 
 # 最大保留消息数
 MAX_HISTORY = 20
+
+def get_text_embedding(text, model=None):
+    # 把一段文字变成一串数字向量
+    text = (text or "").strip()
+    if not text:
+        return []
+    if not getattr(settings, "EMBEDDING_ENABLED", False):
+        return []
+    
+    api_key = getattr(settings, "EMBEDDING_API_KEY", "")
+    if not api_key:
+        raise ValueError("未配置 EMBEDDING_API_KEY 或 OPENAI_API_KEY")
+    
+    model = model or getattr(settings, "DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small")
+    base_url = getattr(settings, "EMBEDDING_BASE_URL", "")
+
+    client_kwargs = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+
+    client = OpenAI(**client_kwargs)
+    response = client.embeddings.create(
+        model=model,
+        input=text,
+    )
+    return response.data[0].embedding
+
+def cosine_similarity(vector_a, vector_b):
+    # 余弦相似度 相似度 = 两个向量的点积 / 两个向量长度相乘
+    if not vector_a or not vector_b:
+        return 0.0
+    if len(vector_a) != len(vector_b):
+        # 向量相似度要一位对一位比较，所以位数不一样返回0
+        return 0.0
+
+    # zip(vector_a, vector_b) 会把两个列表按位置配对
+    # vector_a = [1, 2, 3] vector_b = [4, 5, 6] => [(1, 4), (2, 5), (3, 6)] => 1*4 + 2*5 + 3*6
+    dot = sum(a*b for a, b in zip(vector_a, vector_b))
+    norm_a = math.sqrt(sum(a*a for a in vector_a))
+    norm_b = math.sqrt(sum(b*b for b in vector_b))
+
+    if not norm_a or not norm_b:
+        return 0.0
+    
+    return dot / (norm_a * norm_b)
 
 def get_coversation_history(conversation_id, user=None):
     """

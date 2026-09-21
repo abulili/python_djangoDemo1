@@ -160,6 +160,14 @@ class KnowledgeChunk(models.Model):
     content = models.TextField(verbose_name="切片内容")
     chunk_index = models.IntegerField(verbose_name="切片索引", default=0)
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    # 数据库里按 JSON 格式存，在 Python 代码里，它会自动变成 Python 对象
+    embedding = models.JSONField(
+        # 每次新建对象时，调用 list() 生成一个新的空列表
+        # 不用[]，因为 [] 是可变对象，容易出现多个对象共用同一个默认列表的问题。
+        default=list,
+        blank=True,
+        verbose_name="向量表示",
+    )
     
     class Meta:
         verbose_name = "知识库切片"
