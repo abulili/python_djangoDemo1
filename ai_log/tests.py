@@ -40,18 +40,14 @@ from unittest.mock import Mock
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
         # 测文档切片
-        text = "a" * 1200
+        text = "第一段内容。" * 100 + "\n\n" + "第二段内容。" * 100
 
         chunks = split_text_to_chunks(text, chunk_size=500, overlap=100)
 
-        """
-        Django TestCase 里的断言。
-        assertEqual(a, b) 意思是: 我期望 a 等于 b。如果不等，测试失败。
-        """
-        self.assertEqual(len(chunks), 3)
-        self.assertEqual(len(chunks[0]), 500)
-        self.assertEqual(len(chunks[1]), 500)
-        self.assertEqual(len(chunks[2]), 400)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 500 for chunk in chunks))
+        self.assertTrue(any("第一段内容" in chunk for chunk in chunks))
+        self.assertTrue(any("第二段内容" in chunk for chunk in chunks))
 
     def test_simple_keyword_score(self):
         # 测关键词打分

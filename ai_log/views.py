@@ -71,6 +71,8 @@ import re
 
 from .utils import check_user_ai_rate_limit, check_user_task_status_rate_limit
 
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -142,30 +144,42 @@ RAG 质量决定因素
 
 def split_text_to_chunks(text, chunk_size=500, overlap=100):
     """
-    把长文本切成多个 chunk。
-    第一版用固定长度 + overlap
+    使用 LangChain RecursiveCharacterTextSplitter 切分文档。
+    优先按段落、换行、句子边界切分，比固定字符截断更适合 RAG。
     """
     text = (text or "").strip()
-    chunks = []
 
     if not text:
-        return chunks
+        return []
 
-    start = 0
-    text_length = len(text)
+    # 优先按段落、换行、中文标点切
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=overlap,
+        # 会优先尝试按大的自然边界切，如果太长了就按照下面这个顺序切
+        # 尽量保留完整段落和句子
+        # 段落 -> 换行 -> 中文句号 -> 感叹号 -> 问号 -> 分号 -> 逗号 -> 空格 -> 字符
+        separators=[
+            "\n\n",
+            "\n",
+            "。",
+            "！",
+            "!",
+            "？",
+            "?",
+            "；",
+            ";",
+            "，",
+            ",",
+            "：",
+            ":",
+            " ",
+            "",
+        ],
+        length_function=len,
+    )
 
-    while start < text_length:
-        end = start + chunk_size
-        chunk = text[start:end].strip()
-
-        if chunk:
-            chunks.append(chunk)
-        if end >= text_length:
-            break
-
-        start = end - overlap
-
-    return chunks
+    return splitter.split_text(text)
 
 # 分词
 def extract_keywords(query):
