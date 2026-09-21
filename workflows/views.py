@@ -69,6 +69,7 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
             "current_approver",
             "second_approver",
             "payment_order",
+            "template",
         ).prefetch_related(
             "operation_logs",
             "tasks",
@@ -77,16 +78,32 @@ class WorkflowRequestViewSet(viewsets.ModelViewSet):
         # 查工作流列表时，顺便把每个工作流的操作日志也批量查出来
 
         if user.is_superuser:
-            return queryset
-
+            queryset = queryset
+        else:
         # 普通用户只能看到：自己发起的申请或者需要自己审批的申请
         # Q(...) | Q(...) 里的 | 是“或者”。distinct() 是去重
-        return queryset.filter(
-            Q(applicant=user) |
-            Q(current_approver=user) |
-            Q(second_approver=user) |
-            Q(tasks__approver=user)
-        ).distinct()
+            queryset = queryset.filter(
+                Q(applicant=user) |
+                Q(current_approver=user) |
+                Q(second_approver=user) |
+                Q(tasks__approver=user)
+            ).distinct()
+
+        status_params = self.request.query_params.get("status")
+        if status_params:
+            queryset = queryset.filter(status=status_params)
+
+        request_type = self.request.query_params.get("request_type")
+        if request_type:
+            queryset = queryset.filter(request_type=request_type)
+
+        template_id = self.request.query_params.get("template")
+        if template_id:
+            queryset = queryset.filter(template_id=template_id)
+        
+        return queryset
+
+    
 
     def perform_create(self, serializer):
         workflow = serializer.save(applicant=self.request.user)
