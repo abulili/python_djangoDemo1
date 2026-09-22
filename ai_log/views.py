@@ -722,6 +722,49 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             user=request.user,
             trace_id=trace_id,
             conversation_id=conversation_id,
+            step="agent_memory_tool",
+            query=query,
+            detail={
+                "message_count": tool_result["memory"]["message_count"],
+                "returned_count": len(tool_result["memory"]["messages"]),
+            },
+        )
+
+        AiTraceStepLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="agent_knowledge_tool",
+            query=query,
+            detail={
+                "search_type": tool_result["knowledge"]["search_type"],
+                "top_k": tool_result["knowledge"]["top_k"],
+                "hit_count": len(tool_result["knowledge"]["results"]),
+                "chunk_ids": [
+                    item["id"]
+                    for item in tool_result["knowledge"]["results"]
+                ],
+            },
+        )
+
+        for tool in tool_result["tools"]:
+            if tool["tool"] == "workflow_summary":
+                AiTraceStepLog.objects.create(
+                    user=request.user,
+                    trace_id=trace_id,
+                    conversation_id=conversation_id,
+                    step="agent_workflow_tool",
+                    query=query,
+                    detail={
+                        "my_request_count": tool["my_request_count"],
+                        "pending_approval_count": tool["pending_approval_count"],
+                        "recent_request_count": len(tool["recent_requests"]),
+                    },
+                )
+        AiTraceStepLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
             step="agent_tools",
             query=query,
             detail={

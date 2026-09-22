@@ -467,6 +467,9 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("agent_tools", steps)
         self.assertIn("agent_build_prompt", steps)
         self.assertIn("agent_done", steps)
+        self.assertIn("agent_memory_tool", steps)
+        self.assertIn("agent_knowledge_tool", steps)
+        self.assertIn("agent_workflow_tool", steps)
 
         self.assertEqual(mock_call_ai_service.call_count, 1)
 
@@ -520,6 +523,17 @@ class KnowledgeDocumentApiTests(TestCase):
 
         self.assertFalse(tool_log.detail["used_workflow"])
         self.assertEqual(tool_log.detail["knowledge_hit_count"], 1)
+
+        steps = list(
+            AiTraceStepLog.objects.filter(
+                conversation_id="agent-no-workflow-conversation",
+                user=self.user,
+            ).values_list("step", flat=True)
+        )
+
+        self.assertIn("agent_memory_tool", steps)
+        self.assertIn("agent_knowledge_tool", steps)
+        self.assertNotIn("agent_workflow_tool", steps)
 
     @patch("ai_log.views.call_ai_service")
     def test_agent_ask_records_failed_trace_when_model_call_fails(self, mock_call_ai_service):
@@ -709,6 +723,72 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertGreater(data["references"][0]["keyword_score"], 0)
         self.assertEqual(data["references"][0]["vector_score"], 0.0)
         self.assertFalse(data["references"][0]["has_embedding"])
+
+    @patch("ai_log.views.call_ai_service")
+    def test_agent_ask_records_each_tool_trace_detail(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "工具链路记录成功。",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.001,
+            "duration": 0.1,
+        }, True)
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要进入审批流程。",
+        )
+
+        chunk = KnowledgeChunk.objects.create(
+            document=doc,
+            content="付款申请超过 5000 元需要进入审批流程。",
+            chunk_index=0,
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        WorkflowRequest.objects.create(
+            applicant=self.user,
+            current_approver=self.user,
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="测试付款申请",
+            description="测试付款申请说明",
+            amount="6000.00",
+            status=WorkflowRequest.STATUS_PENDING,
+        )
+
+        response = self.client.post("/api/knowledge-documents/agent-ask/", {
+            "query": "这笔付款申请要不要审批？",
+            "top_k": 3,
+            "conversation_id": "agent-tool-trace-conversation",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        memory_log = AiTraceStepLog.objects.get(
+            conversation_id="agent-tool-trace-conversation",
+            user=self.user,
+            step="agent_memory_tool",
+        )
+        self.assertEqual(memory_log.detail["message_count"], 0)
+
+        knowledge_log = AiTraceStepLog.objects.get(
+            conversation_id="agent-tool-trace-conversation",
+            user=self.user,
+            step="agent_knowledge_tool",
+        )
+        self.assertEqual(knowledge_log.detail["hit_count"], 1)
+        self.assertEqual(knowledge_log.detail["chunk_ids"], [chunk.id])
+
+        workflow_log = AiTraceStepLog.objects.get(
+            conversation_id="agent-tool-trace-conversation",
+            user=self.user,
+            step="agent_workflow_tool",
+        )
+        self.assertEqual(workflow_log.detail["my_request_count"], 1)
+        self.assertEqual(workflow_log.detail["pending_approval_count"], 1)
+        self.assertEqual(workflow_log.detail["recent_request_count"], 1)
 
 
 class AICallLogApiTests(TestCase):
