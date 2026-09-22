@@ -571,6 +571,145 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("agent_failed", steps)
         self.assertNotIn("agent_done", steps)
 
+    @patch("ai_log.agent_tools.get_text_embedding")
+    @patch("ai_log.views.call_ai_service")
+    def test_agent_ask_supports_hybrid_search_type(self, mock_call_ai_service, mock_get_text_embedding):
+        mock_call_ai_service.return_value = ({
+            "reply": "混合检索回答。",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.001,
+            "duration": 0.1,
+        }, True)
+
+        mock_get_text_embedding.return_value = [1.0, 0.0, 0.0]
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="单端登录说明",
+            content="单端登录通过 token_version 让旧 token 失效。",
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="单端登录通过 token_version 让旧 token 失效。",
+            chunk_index=0,
+            embedding=[1.0, 0.0, 0.0],
+        )
+
+        response = self.client.post("/api/knowledge-documents/agent-ask/", {
+            "query": "旧 token 为什么失效？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "agent-hybrid-conversation",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+
+        self.assertEqual(data["search_type"], "hybrid")
+        self.assertEqual(data["references"][0]["document_title"], "单端登录说明")
+        self.assertIn("keyword_score", data["references"][0])
+        self.assertIn("vector_score", data["references"][0])
+        self.assertTrue(data["references"][0]["has_embedding"])
+
+        tool_log = AiTraceStepLog.objects.get(
+            conversation_id="agent-hybrid-conversation",
+            user=self.user,
+            step="agent_tools",
+        )
+
+        self.assertEqual(tool_log.detail["search_type"], "hybrid")
+        self.assertEqual(tool_log.detail["knowledge_hit_count"], 1)
+
+    @patch("ai_log.agent_tools.get_text_embedding")
+    @patch("ai_log.views.call_ai_service")
+    def test_agent_ask_supports_vector_search_type(self, mock_call_ai_service, mock_get_text_embedding):
+        mock_call_ai_service.return_value = ({
+            "reply": "向量检索回答。",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.001,
+            "duration": 0.1,
+        }, True)
+
+        mock_get_text_embedding.return_value = [1.0, 0.0, 0.0]
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="单端登录说明",
+            content="单端登录通过 token_version 让旧 token 失效。",
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="这段内容故意不包含用户问题里的关键词。",
+            chunk_index=0,
+            embedding=[1.0, 0.0, 0.0],
+        )
+
+        response = self.client.post("/api/knowledge-documents/agent-ask/", {
+            "query": "旧 token 为什么失效？",
+            "top_k": 3,
+            "search_type": "vector",
+            "conversation_id": "agent-vector-conversation",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["search_type"], "vector")
+        self.assertEqual(data["references"][0]["document_title"], "单端登录说明")
+        self.assertEqual(data["references"][0]["keyword_score"], 0)
+        self.assertGreater(data["references"][0]["vector_score"], 0)
+        self.assertTrue(data["references"][0]["has_embedding"])
+
+    @patch("ai_log.agent_tools.get_text_embedding")
+    @patch("ai_log.views.call_ai_service")
+    def test_agent_ask_hybrid_search_keeps_old_chunks_without_embedding(self, mock_call_ai_service, mock_get_text_embedding):
+        mock_call_ai_service.return_value = ({
+            "reply": "旧数据混合检索回答。",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.001,
+            "duration": 0.1,
+        }, True)
+
+        mock_get_text_embedding.return_value = [1.0, 0.0, 0.0]
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="旧知识库文档",
+            content="付款申请超过 5000 元需要进入审批流程。",
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="付款申请超过 5000 元需要进入审批流程。",
+            chunk_index=0,
+            embedding=[],
+        )
+
+        response = self.client.post("/api/knowledge-documents/agent-ask/", {
+            "query": "付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "agent-hybrid-old-chunk-conversation",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["search_type"], "hybrid")
+        self.assertEqual(data["references"][0]["document_title"], "旧知识库文档")
+        self.assertGreater(data["references"][0]["keyword_score"], 0)
+        self.assertEqual(data["references"][0]["vector_score"], 0.0)
+        self.assertFalse(data["references"][0]["has_embedding"])
+
 
 class AICallLogApiTests(TestCase):
     def setUp(self):

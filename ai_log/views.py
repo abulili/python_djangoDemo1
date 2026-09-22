@@ -676,6 +676,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         """
         query = request.data.get("query", "")
         top_k = int(request.data.get("top_k",3))
+        search_type = request.data.get("search_type", "keyword")
         model_key = request.data.get("model", getattr(settings, "DEFAULT_AI_MODEL", "deepseek"))
         conversation_id = request.data.get("conversation_id")
         trace_id = getattr(request, "trace_id", "")
@@ -706,7 +707,8 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             query=query,
             detail={
                 "top_k": top_k,
-                "model": model_key
+                "model": model_key,
+                "search_type": search_type,
             }
         )
         tool_result = run_agent_tools(
@@ -714,6 +716,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             query=query,
             conversation_id=conversation_id,
             top_k=top_k,
+            search_type=search_type,
         )
         AiTraceStepLog.objects.create(
             user=request.user,
@@ -726,6 +729,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
                     item["tool"]
                     for item in tool_result["tools"]
                 ],
+                "search_type": search_type,
                 "knowledge_hit_count": len(tool_result["knowledge"]["results"]),
                 "memory_message_count": tool_result["memory"]["message_count"],
                 "used_workflow": tool_result["used_workflow"],
@@ -847,6 +851,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
 
         return success_response({
             "query": query,
+            "search_type": search_type,
             "answer": answer,
             "conversation_id": conversation_id,
             "tools": tool_result["tools"],

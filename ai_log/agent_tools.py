@@ -1,6 +1,7 @@
 import re
+import logging
 from ai_log.models import KnowledgeChunk
-from ai_log.services import get_coversation_history
+from ai_log.services import get_coversation_history,get_text_embedding, cosine_similarity
 
 # 把 Agent 可以使用的能力封装成工具。给 AI 准备“可用资料”。
 # 工具编排
@@ -14,6 +15,8 @@ from ai_log.services import get_coversation_history
 
 就是 LangChain / Agent 的雏形。
 """
+
+logger = logging.getLogger(__name__)
 
 def extract_agent_keywords(text):
     text = (text or "").strip().lower()
@@ -59,16 +62,35 @@ def score_text_by_keywords(query, text):
 
     return score
 
-def retrieve_knowledge_tool(user, query, top_k=3):
+def retrieve_knowledge_tool(user, query, top_k=3, search_type="keyword"):
     if user.is_superuser:
         chunks = KnowledgeChunk.objects.select_related("document").all()
     else:
         chunks = KnowledgeChunk.objects.select_related("document").filter(document__user=user)
+
+    search_type = search_type or "keyword"
+    query_embedding = []
+
+    if search_type in ["vector", "hybrid"]:
+        try:
+            query_embedding = get_text_embedding(query)
+        except Exception as e:
+            logger.warning("agent 知识库查询向量生成失败: %s", e)
+            query_embedding = []
     
     scored_chunks = []
 
     for chunk in chunks:
-        score = score_text_by_keywords(query, chunk.content)
+        keyword_score = score_text_by_keywords(query, chunk.content)
+        vector_score = cosine_similarity(query_embedding, chunk.embedding)
+
+        if search_type == "vector":
+            score = vector_score
+        elif search_type == "hybrid":
+            score = keyword_score + vector_score * 3
+        else:
+            score = keyword_score
+
         if score <= 0:
             continue
 
@@ -79,16 +101,19 @@ def retrieve_knowledge_tool(user, query, top_k=3):
             "chunk_index": chunk.chunk_index,
             "content": chunk.content,
             "score": score,
+            "keyword_score": keyword_score,
+            "vector_score": vector_score,
             "has_embedding": bool(chunk.embedding),
         })
 
-    scored_chunks.sort(key=lambda x: x["score"], reverse=True)
-    
+    scored_chunks.sort(key=lambda item: item["score"], reverse=True)
+
     return {
         "tool": "retrieve_knowledge",
         "description": "知识库检索工具",
         "query": query,
         "top_k": top_k,
+        "search_type": search_type,
         "results": scored_chunks[:top_k],
     }
 
@@ -152,7 +177,7 @@ def should_use_workflow_tool(query):
     # any：只要有一个 True，整体就是 True
     return any(keyword in (query or "") for keyword in keywords)
 
-def run_agent_tools(user, query, conversation_id=None, top_k=3):
+def run_agent_tools(user, query, conversation_id=None, top_k=3, search_type="keyword"):
     tools = []
 
     memory_result = get_conversation_memory_tool(
@@ -164,6 +189,7 @@ def run_agent_tools(user, query, conversation_id=None, top_k=3):
         user=user,
         query=query,
         top_k=top_k,
+        search_type=search_type,
     )
     tools.append(knowledge_result)
 
