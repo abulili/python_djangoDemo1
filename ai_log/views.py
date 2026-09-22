@@ -74,6 +74,7 @@ import re
 from .utils import check_user_ai_rate_limit, check_user_task_status_rate_limit
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from .agent_tools import run_agent_tools
 
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
@@ -666,6 +667,194 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         if request_id:
             cache.set(idempotent_key, response_data, timeout=300)
         return success_response(response_data)
+
+    @action(detail=False, methods=["post"], url_path="agent-ask", throttle_classes=[AICallThrottle])
+    def agent_ask(self, request):
+        """
+        ask是普通RAG问答
+        agent_ask是工具编排问答： RAG + 记忆 + 业务工具 的 Agent 问答
+        """
+        query = request.data.get("query", "")
+        top_k = int(request.data.get("top_k",3))
+        model_key = request.data.get("model", getattr(settings, "DEFAULT_AI_MODEL", "deepseek"))
+        conversation_id = request.data.get("conversation_id")
+        trace_id = getattr(request, "trace_id", "")
+
+        if not query.strip():
+            return error_response("请提供query", code=400)
+
+        allowed, current_count = check_user_ai_rate_limit(request.user.id)
+        if not allowed:
+            return error_response(
+                "请求过于频繁，请稍后再试",
+                code=429,
+                data={
+                    "current_count": current_count,
+                    "limit": 10,
+                    "window_seconds": 60,
+                },
+            )
+
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
+
+        AiTraceStepLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="agent_start",
+            query=query,
+            detail={
+                "top_k": top_k,
+                "model": model_key
+            }
+        )
+        tool_result = run_agent_tools(
+            user=request.user,
+            query=query,
+            conversation_id=conversation_id,
+            top_k=top_k,
+        )
+        AiTraceStepLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="agent_tools",
+            query=query,
+            detail={
+                "tool_names": [
+                    item["tool"]
+                    for item in tool_result["tools"]
+                ],
+                "knowledge_hit_count": len(tool_result["knowledge"]["results"]),
+                "memory_message_count": tool_result["memory"]["message_count"],
+                "used_workflow": tool_result["used_workflow"],
+            },
+        )
+
+        knowledge_context = "\n\n".join([
+            f"资料{index + 1}：{item['content']}"
+            for index, item in enumerate(tool_result["knowledge"]["results"])
+        ])
+
+        # 列表转文字
+        memory_context = "\n".join([
+            f"{item.get('role')}: {item.get('content')}"
+            for item in tool_result["memory"]["messages"]
+        ])
+
+        workflow_context = ""
+        for tool in tool_result["tools"]:
+            if tool["tool"] == "workflow_summary":
+                # 字典转成 JSON 字符串，ensure_ascii=False 是为了中文不要变成\u4ed8\u6b3e
+                workflow_context = json.dumps(tool, ensure_ascii=False)
+
+        agent_prompt = f"""
+你是一个业务 AI 助手。你可以综合会话记忆、知识库资料和业务工具结果回答用户问题。
+
+【会话记忆】
+{memory_context or "暂无会话记忆"}
+
+【知识库资料】
+{knowledge_context or "暂无知识库命中"}
+
+【工作流工具结果】
+{workflow_context or "本次问题未调用工作流工具"}
+
+【用户问题】
+{query}
+
+回答要求：
+1. 优先基于知识库资料和工具结果回答。
+2. 如果知识库没有命中，要明确说明。
+3. 如果调用了工作流工具，请结合申请数量、待审批数量、最近申请进行分析。
+4. 不要编造工具结果里不存在的数据。
+"""
+        AiTraceStepLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="agent_build_prompt",
+            query=query,
+            detail={
+                "prompt_length": len(agent_prompt),
+                "knowledge_context_length": len(knowledge_context),
+                "memory_context_length": len(memory_context),
+                "workflow_context_length": len(workflow_context),
+            },
+        )
+
+        result, success = call_ai_service(
+            prompt=agent_prompt,
+            model_key=model_key,
+            user=request.user,
+        )
+
+        if not success:
+            AiTraceStepLog.objects.create(
+                user=request.user,
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                step="agent_failed",
+                query=query,
+                success=False,
+                error_message=result.get("reply", "AI调用失败"),
+                detail={
+                    "model": model_key,
+                },
+            )
+
+            return error_response(result.get("reply", "AI调用失败"), code=500)
+
+        answer = result.get("reply", "")
+
+        AICallLog.objects.create(
+            conversation_id=conversation_id,
+            prompt=query,
+            response=answer,
+            duration=result.get("duration", 0.0),
+            success=True,
+            user=request.user,
+            model_name=model_key,
+            prompt_tokens=result.get("prompt_tokens", 0),
+            completion_tokens=result.get("completion_tokens", 0),
+            total_tokens=result.get("total_tokens", 0),
+            cost=result.get("cost", 0.0),
+            trace_id=trace_id,
+        )
+
+        save_conversation_messages_to_db(
+            conversation_id=conversation_id,
+            user=request.user,
+            user_content=query,
+            assistant_content=answer,
+        )
+
+        AiTraceStepLog.objects.create(
+            user=request.user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="agent_done",
+            query=query,
+            detail={
+                "answer_length": len(answer),
+                "tool_count": len(tool_result["tools"]),
+                "knowledge_hit_count": len(tool_result["knowledge"]["results"]),
+                "total_tokens": result.get("total_tokens", 0),
+                "cost": result.get("cost", 0.0),
+            },
+        )
+
+        return success_response({
+            "query": query,
+            "answer": answer,
+            "conversation_id": conversation_id,
+            "tools": tool_result["tools"],
+            "references": tool_result["knowledge"]["results"],
+        })
+
+
+        
 
 class AICallLogViewSet(viewsets.ModelViewSet):
     """

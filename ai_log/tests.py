@@ -39,6 +39,7 @@ from unittest.mock import Mock
 
 from django.core.management import call_command
 from io import StringIO
+from workflows.models import WorkflowRequest
 
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
@@ -403,48 +404,173 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIsNotNone(log)
 
     @patch("ai_log.views.call_ai_service")
-    def test_ask_saves_trace_id_to_ai_call_log(self, mock_call_ai_service):
-        trace_id = "test-trace-id-001"
+    def test_agent_ask_uses_knowledge_memory_and_workflow_tools(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "这笔付款申请需要结合知识库规则和工作流状态判断。",
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 0.2,
+        }, True)
 
         doc = KnowledgeDocument.objects.create(
             user=self.user,
-            title="AI日志项目说明",
-            content="stream3 使用 conversation_id 实现上下文会话"
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要进入审批流程。",
         )
 
         KnowledgeChunk.objects.create(
             document=doc,
-            content="stream3 使用 conversation_id 实现上下文会话",
-            chunk_index=0
+            content="付款申请超过 5000 元需要进入审批流程。",
+            chunk_index=0,
+            embedding=[0.1, 0.2, 0.3],
         )
 
-        mock_call_ai_service.return_value = ({
-            "reply": "根据知识库资料，stream3 使用 conversation_id 保存上下文。",
-            "prompt_tokens": 10,
-            "completion_tokens": 20,
-            "total_tokens": 30,
-            "cost": 0.001,
-            "duration": 1.2,
-        }, True)
-
-        response = self.client.post("/api/knowledge-documents/ask/",{
-                "query": "stream3 是怎么实现上下文会话的？",
-                "top_k": 3,
-                "model": "deepseek",
-            },
-            format="json",
-            # django测试里面写这样模拟真实请求头： HTTP_ + 大写请求头名 + 横杠变下划线
-            HTTP_X_TRACE_ID=trace_id,
+        WorkflowRequest.objects.create(
+            applicant=self.user,
+            current_approver=self.user,
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="测试付款申请",
+            description="测试付款申请说明",
+            amount="6000.00",
+            status=WorkflowRequest.STATUS_PENDING,
         )
+
+        response = self.client.post("/api/knowledge-documents/agent-ask/", {
+            "query": "这笔付款申请要不要审批？",
+            "top_k": 3,
+            "conversation_id": "agent-test-conversation",
+        }, format="json")
 
         self.assertEqual(response.status_code, 200)
 
-        log = AICallLog.objects.filter(trace_id=trace_id, user=self.user).first()
+        data = response.data["data"]
+        self.assertEqual(data["answer"], "这笔付款申请需要结合知识库规则和工作流状态判断。")
+        self.assertEqual(data["conversation_id"], "agent-test-conversation")
+        self.assertGreaterEqual(len(data["tools"]), 3)
+        self.assertEqual(data["references"][0]["document_title"], "付款审批规则")
 
-        self.assertIsNotNone(log)
-        self.assertEqual(log.trace_id, trace_id)
-        self.assertEqual(log.user, self.user)
-        self.assertEqual(log.prompt, "stream3 是怎么实现上下文会话的？")
+        tool_names = [item["tool"] for item in data["tools"]]
+        self.assertIn("conversation_memory", tool_names)
+        self.assertIn("retrieve_knowledge", tool_names)
+        self.assertIn("workflow_summary", tool_names)
+
+        steps = list(
+            AiTraceStepLog.objects.filter(
+                conversation_id="agent-test-conversation",
+                user=self.user,
+            ).values_list("step", flat=True)
+        )
+
+        self.assertIn("agent_start", steps)
+        self.assertIn("agent_tools", steps)
+        self.assertIn("agent_build_prompt", steps)
+        self.assertIn("agent_done", steps)
+
+        self.assertEqual(mock_call_ai_service.call_count, 1)
+
+    @patch("ai_log.views.call_ai_service")
+    def test_agent_ask_without_workflow_keyword_only_uses_memory_and_knowledge(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "这是普通知识库回答。",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.001,
+            "duration": 0.1,
+        }, True)
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="单端登录说明",
+            content="单端登录通过 token_version 让旧 token 失效。",
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="单端登录通过 token_version 让旧 token 失效。",
+            chunk_index=0,
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        response = self.client.post("/api/knowledge-documents/agent-ask/", {
+            "query": "单端登录为什么会让旧 token 失效？",
+            "top_k": 3,
+            "conversation_id": "agent-no-workflow-conversation",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        # 因为之拦截Ai调用的函数
+        tool_names = [item["tool"] for item in data["tools"]]
+
+        self.assertIn("conversation_memory", tool_names)
+        self.assertIn("retrieve_knowledge", tool_names)
+        self.assertNotIn("workflow_summary", tool_names)
+        self.assertEqual(len(data["tools"]), 2)
+        self.assertEqual(data["references"][0]["document_title"], "单端登录说明")
+
+        tool_log = AiTraceStepLog.objects.get(
+            conversation_id="agent-no-workflow-conversation",
+            user=self.user,
+            step="agent_tools",
+        )
+
+        self.assertFalse(tool_log.detail["used_workflow"])
+        self.assertEqual(tool_log.detail["knowledge_hit_count"], 1)
+
+    @patch("ai_log.views.call_ai_service")
+    def test_agent_ask_records_failed_trace_when_model_call_fails(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "AI调用失败：模型接口超时",
+            "duration": 0.1,
+        }, False)
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要进入审批流程。",
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="付款申请超过 5000 元需要进入审批流程。",
+            chunk_index=0,
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        response = self.client.post("/api/knowledge-documents/agent-ask/", {
+            "query": "这笔付款申请要不要审批？",
+            "top_k": 3,
+            "conversation_id": "agent-failed-conversation",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 500)
+
+        failed_log = AiTraceStepLog.objects.get(
+            conversation_id="agent-failed-conversation",
+            user=self.user,
+            step="agent_failed",
+        )
+
+        self.assertFalse(failed_log.success)
+        self.assertIn("模型接口超时", failed_log.error_message)
+
+        steps = list(
+            AiTraceStepLog.objects.filter(
+                conversation_id="agent-failed-conversation",
+                user=self.user,
+            ).values_list("step", flat=True)
+        )
+
+        self.assertIn("agent_start", steps)
+        self.assertIn("agent_tools", steps)
+        self.assertIn("agent_build_prompt", steps)
+        self.assertIn("agent_failed", steps)
+        self.assertNotIn("agent_done", steps)
+
 
 class AICallLogApiTests(TestCase):
     def setUp(self):
