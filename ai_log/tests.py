@@ -37,6 +37,9 @@ from datetime import timedelta
 from ai_log.notifications.feishu import AINotificationContext, should_notify_ai_call, send_feishu_ai_notification
 from unittest.mock import Mock
 
+from django.core.management import call_command
+from io import StringIO
+
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
         # 测文档切片
@@ -3380,4 +3383,97 @@ class FeishuNotificationTests(TestCase):
         )
         self.assertTrue(task_done_log.success)
 
-        
+class KnowledgeEmbeddingCommandTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="embeddinguser",
+            password="123456",
+        )
+
+        self.document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="RAG 文档",
+            content="单端登录和 token_version 机制说明",
+        )
+
+    @patch("ai_log.management.commands.rebuild_knowledge_embeddings.get_text_embedding")
+    def test_rebuild_only_empty_embeddings_by_default(self, mock_get_text_embedding):
+        mock_get_text_embedding.return_value = [0.1, 0.2, 0.3]
+
+        empty_chunk = KnowledgeChunk.objects.create(
+            document=self.document,
+            content="单端登录会让旧 token 失效",
+            chunk_index=0,
+            embedding=[],
+        )
+
+        existing_chunk = KnowledgeChunk.objects.create(
+            document=self.document,
+            content="已有向量的切片",
+            chunk_index=1,
+            embedding=[9.9, 8.8],
+        )
+
+        output = StringIO()
+
+        call_command("rebuild_knowledge_embeddings", stdout=output)
+
+        empty_chunk.refresh_from_db()
+        existing_chunk.refresh_from_db()
+
+        self.assertEqual(empty_chunk.embedding, [0.1, 0.2, 0.3])
+        self.assertEqual(existing_chunk.embedding, [9.9, 8.8])
+        self.assertEqual(mock_get_text_embedding.call_count, 1)
+
+        self.assertIn("processed=1", output.getvalue())
+        self.assertIn("skipped=1", output.getvalue())
+
+    @patch("ai_log.management.commands.rebuild_knowledge_embeddings.get_text_embedding")
+    def test_rebuild_force_updates_existing_embeddings(self, mock_get_text_embedding):
+        mock_get_text_embedding.return_value = [0.4, 0.5, 0.6]
+
+        chunk = KnowledgeChunk.objects.create(
+            document=self.document,
+            content="已有向量但需要强制重建",
+            chunk_index=0,
+            embedding=[1.1, 1.2],
+        )
+
+        output = StringIO()
+
+        call_command("rebuild_knowledge_embeddings", "--force", stdout=output)
+
+        chunk.refresh_from_db()
+
+        self.assertEqual(chunk.embedding, [0.4, 0.5, 0.6])
+        self.assertEqual(mock_get_text_embedding.call_count, 1)
+
+        self.assertIn("processed=1", output.getvalue())
+
+    @patch("ai_log.management.commands.rebuild_knowledge_embeddings.get_text_embedding")
+    def test_rebuild_limit_controls_processed_count(self, mock_get_text_embedding):
+        mock_get_text_embedding.return_value = [0.7, 0.8, 0.9]
+
+        KnowledgeChunk.objects.create(
+            document=self.document,
+            content="第一个空向量切片",
+            chunk_index=0,
+            embedding=[],
+        )
+        KnowledgeChunk.objects.create(
+            document=self.document,
+            content="第二个空向量切片",
+            chunk_index=1,
+            embedding=[],
+        )
+
+        # 内存里的假文件
+        output = StringIO()
+
+        # output.getvalue() 就是拿到命令输出的文字。
+        call_command("rebuild_knowledge_embeddings", "--limit", "1", stdout=output)
+
+        self.assertEqual(mock_get_text_embedding.call_count, 1)
+        self.assertIn("processed=1", output.getvalue())
+
+
