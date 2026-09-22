@@ -790,6 +790,133 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertEqual(workflow_log.detail["pending_approval_count"], 1)
         self.assertEqual(workflow_log.detail["recent_request_count"], 1)
 
+    @patch("ai_log.views.call_ai_service")
+    def test_agent_ask_reuses_result_when_request_id_repeated(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "第一次 Agent 回答",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.001,
+            "duration": 0.1,
+        }, True)
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="单端登录说明",
+            content="单端登录通过 token_version 让旧 token 失效。",
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="单端登录通过 token_version 让旧 token 失效。",
+            chunk_index=0,
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        payload = {
+            "query": "单端登录为什么会让旧 token 失效？",
+            "top_k": 3,
+            "conversation_id": "agent-idempotent-conversation",
+            "request_id": "agent-request-001",
+        }
+
+        response1 = self.client.post(
+            "/api/knowledge-documents/agent-ask/",
+            payload,
+            format="json",
+        )
+        response2 = self.client.post(
+            "/api/knowledge-documents/agent-ask/",
+            payload,
+            format="json",
+        )
+
+        self.assertEqual(response1.status_code, 200)
+        self.assertEqual(response2.status_code, 200)
+
+        self.assertFalse(response1.data["data"]["idempotent"])
+        self.assertTrue(response2.data["data"]["idempotent"])
+
+        self.assertEqual(response1.data["data"]["answer"], "第一次 Agent 回答")
+        self.assertEqual(response2.data["data"]["answer"], "第一次 Agent 回答")
+
+        self.assertEqual(mock_call_ai_service.call_count, 1)
+
+        hit_step = AiTraceStepLog.objects.filter(
+            conversation_id="agent-idempotent-conversation",
+            user=self.user,
+            step="agent_idempotent_hit",
+        ).first()
+
+        self.assertIsNotNone(hit_step)
+        self.assertEqual(hit_step.detail["request_id"], "agent-request-001")
+        self.assertEqual(hit_step.detail["type"], "agent_ask")
+
+    @patch("ai_log.views.call_ai_service")
+    def test_agent_ask_does_not_cache_failed_result(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = [
+            ({
+                "reply": "AI调用失败：模型接口超时",
+                "duration": 0.1,
+            }, False),
+            ({
+                "reply": "第二次 Agent 调用成功",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "cost": 0.001,
+                "duration": 0.1,
+            }, True),
+        ]
+
+        doc = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="单端登录说明",
+            content="单端登录通过 token_version 让旧 token 失效。",
+        )
+
+        KnowledgeChunk.objects.create(
+            document=doc,
+            content="单端登录通过 token_version 让旧 token 失效。",
+            chunk_index=0,
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        payload = {
+            "query": "单端登录为什么会让旧 token 失效？",
+            "top_k": 3,
+            "conversation_id": "agent-failed-not-cache-conversation",
+            "request_id": "agent-request-failed-001",
+        }
+
+        response1 = self.client.post(
+            "/api/knowledge-documents/agent-ask/",
+            payload,
+            format="json",
+        )
+        response2 = self.client.post(
+            "/api/knowledge-documents/agent-ask/",
+            payload,
+            format="json",
+        )
+
+        self.assertEqual(response1.status_code, 500)
+        self.assertEqual(response2.status_code, 200)
+
+        self.assertEqual(response2.data["data"]["answer"], "第二次 Agent 调用成功")
+        self.assertFalse(response2.data["data"]["idempotent"])
+
+        self.assertEqual(mock_call_ai_service.call_count, 2)
+
+        hit_step = AiTraceStepLog.objects.filter(
+            conversation_id="agent-failed-not-cache-conversation",
+            user=self.user,
+            step="agent_idempotent_hit",
+        ).first()
+
+        self.assertIsNone(hit_step)
+
 
 class AICallLogApiTests(TestCase):
     def setUp(self):

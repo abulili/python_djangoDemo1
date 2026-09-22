@@ -680,9 +680,37 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         model_key = request.data.get("model", getattr(settings, "DEFAULT_AI_MODEL", "deepseek"))
         conversation_id = request.data.get("conversation_id")
         trace_id = getattr(request, "trace_id", "")
+        request_id = request.data.get("request_id")
 
         if not query.strip():
             return error_response("请提供query", code=400)
+
+        if request_id:
+            idempotent_key = f"agent_ask_idempotent:{request.user.id}:{request_id}"
+            cached_result = cache.get(idempotent_key)
+
+            if cached_result:
+                AiTraceStepLog.objects.create(
+                    user=request.user,
+                    trace_id=trace_id,
+                    conversation_id=cached_result.get("conversation_id", conversation_id or ""),
+                    step="agent_idempotent_hit",
+                    query=query,
+                    detail={
+                        "request_id": request_id,
+                        "type": "agent_ask",
+                        "answer_length": len(cached_result.get("answer", "")),
+                        "references_count": len(cached_result.get("references", [])),
+                        "tool_count": len(cached_result.get("tools", [])),
+                    },
+                    success=True,
+                )
+
+                response_data = {
+                    **cached_result,
+                    "idempotent": True,
+                }
+                return success_response(response_data, message="重复请求已复用原结果")
 
         allowed, current_count = check_user_ai_rate_limit(request.user.id)
         if not allowed:
@@ -892,14 +920,20 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             },
         )
 
-        return success_response({
+        response_data = {
             "query": query,
             "search_type": search_type,
             "answer": answer,
             "conversation_id": conversation_id,
             "tools": tool_result["tools"],
             "references": tool_result["knowledge"]["results"],
-        })
+            "idempotent": False,
+        }
+
+        if request_id:
+            cache.set(idempotent_key, response_data, timeout=300)
+
+        return success_response(response_data)
 
 
         
