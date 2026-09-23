@@ -78,6 +78,8 @@ class RegServiceTests(TestCase):
 
 class KnowledgeDocumentApiTests(TestCase):
     def setUp(self):
+        cache.clear()
+        
         self.user = User.objects.create_user(username="testuser", password="123456")
         self.other_user = User.objects.create_user(username="testuser2", password="123456Ab")
         self.client = APIClient()
@@ -916,6 +918,271 @@ class KnowledgeDocumentApiTests(TestCase):
         ).first()
 
         self.assertIsNone(hit_step)
+
+    @patch("ai_log.views.call_ai_service")
+    def test_agent_ask_returns_trace_tools_references_for_resume_highlight(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "基于混合检索和工作流工具判断，这笔付款申请需要审批。",
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 0.2,
+        }, True)
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要走审批流程。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="付款申请超过 5000 元需要走审批流程。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        response = self.client.post("/api/knowledge-documents/agent-ask/", {
+            "query": "这笔付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "agent-resume-highlight-conversation",
+            "request_id": "agent-resume-highlight-request",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+
+        self.assertEqual(data["search_type"], "hybrid")
+        self.assertEqual(data["conversation_id"], "agent-resume-highlight-conversation")
+        self.assertEqual(data["answer"], "基于混合检索和工作流工具判断，这笔付款申请需要审批。")
+
+        self.assertGreaterEqual(len(data["tools"]), 2)
+        tool_names = [tool["tool"] for tool in data["tools"]]
+        self.assertIn("conversation_memory", tool_names)
+        self.assertIn("retrieve_knowledge", tool_names)
+
+        self.assertGreaterEqual(len(data["references"]), 1)
+        self.assertEqual(data["references"][0]["document_title"], "付款审批规则")
+
+        trace_id = response.headers.get("X-Trace-Id")
+        self.assertTrue(trace_id)
+
+        step_names = list(
+            AiTraceStepLog.objects.filter(trace_id=trace_id)
+            .order_by("created_at")
+            .values_list("step", flat=True)
+        )
+
+        self.assertIn("agent_start", step_names)
+        self.assertIn("agent_memory_tool", step_names)
+        self.assertIn("agent_knowledge_tool", step_names)
+        self.assertIn("agent_tools", step_names)
+        self.assertIn("agent_build_prompt", step_names)
+        self.assertIn("agent_done", step_names)
+
+        mock_call_ai_service.assert_called_once()
+    
+    @patch("ai_log.views.call_ai_service")
+    def test_langchain_agent_ask_uses_tools_and_records_trace(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "LangChain-style Agent 判断这笔付款申请需要审批。",
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 0.2,
+        }, True)
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要走审批流程。",
+        )
+        chunk = KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="付款申请超过 5000 元需要走审批流程。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        response = self.client.post("/api/knowledge-documents/langchain-agent-ask/", {
+            "query": "这笔付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "langchain-agent-conversation",
+            "request_id": "langchain-agent-request-001",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["framework"], "langchain-style")
+        self.assertEqual(data["answer"], "LangChain-style Agent 判断这笔付款申请需要审批。")
+        self.assertEqual(data["conversation_id"], "langchain-agent-conversation")
+        self.assertEqual(data["search_type"], "hybrid")
+        self.assertFalse(data["idempotent"])
+
+        tool_names = [item["tool"] for item in data["tools"]]
+        self.assertIn("conversation_memory", tool_names)
+        self.assertIn("knowledge_retriever", tool_names)
+        self.assertIn("workflow_summary", tool_names)
+
+        self.assertGreaterEqual(len(data["references"]), 1)
+        self.assertEqual(data["references"][0]["id"], chunk.id)
+        self.assertEqual(data["references"][0]["document_title"], "付款审批规则")
+
+        trace_id = response.headers.get("X-Trace-Id")
+        self.assertTrue(trace_id)
+
+        step_names = list(
+            AiTraceStepLog.objects.filter(
+                trace_id=trace_id,
+                user=self.user,
+            )
+            .order_by("created_at")
+            .values_list("step", flat=True)
+        )
+
+        self.assertIn("langchain_agent_start", step_names)
+        self.assertIn("langchain_tool_memory", step_names)
+        self.assertIn("langchain_tool_retriever", step_names)
+        self.assertIn("langchain_tool_workflow", step_names)
+        self.assertIn("langchain_prompt_build", step_names)
+        self.assertIn("langchain_agent_done", step_names)
+
+        mock_call_ai_service.assert_called_once()
+
+
+    @patch("ai_log.views.call_ai_service")
+    def test_langchain_agent_ask_reuses_result_when_request_id_repeated(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "第一次 LangChain-style Agent 回答",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.001,
+            "duration": 0.1,
+        }, True)
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="单端登录说明",
+            content="单端登录通过 token_version 让旧 token 失效。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="单端登录通过 token_version 让旧 token 失效。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        payload = {
+            "query": "单端登录为什么会让旧 token 失效？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "langchain-idempotent-conversation",
+            "request_id": "langchain-agent-request-002",
+        }
+
+        response1 = self.client.post(
+            "/api/knowledge-documents/langchain-agent-ask/",
+            payload,
+            format="json",
+        )
+        response2 = self.client.post(
+            "/api/knowledge-documents/langchain-agent-ask/",
+            payload,
+            format="json",
+        )
+
+        self.assertEqual(response1.status_code, 200)
+        self.assertEqual(response2.status_code, 200)
+
+        self.assertFalse(response1.data["data"]["idempotent"])
+        self.assertTrue(response2.data["data"]["idempotent"])
+
+        self.assertEqual(response1.data["data"]["answer"], "第一次 LangChain-style Agent 回答")
+        self.assertEqual(response2.data["data"]["answer"], "第一次 LangChain-style Agent 回答")
+
+        self.assertEqual(mock_call_ai_service.call_count, 1)
+
+        hit_step = AiTraceStepLog.objects.filter(
+            conversation_id="langchain-idempotent-conversation",
+            user=self.user,
+            step="langchain_agent_idempotent_hit",
+        ).first()
+
+        self.assertIsNotNone(hit_step)
+        self.assertEqual(hit_step.detail["request_id"], "langchain-agent-request-002")
+        self.assertEqual(hit_step.detail["type"], "langchain_agent_ask")
+
+
+    @patch("ai_log.views.call_ai_service")
+    def test_langchain_agent_ask_does_not_cache_failed_result(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = [
+            ({
+                "reply": "AI调用失败：模型接口超时",
+                "duration": 0.1,
+            }, False),
+            ({
+                "reply": "第二次 LangChain-style Agent 调用成功",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "cost": 0.001,
+                "duration": 0.1,
+            }, True),
+        ]
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="单端登录说明",
+            content="单端登录通过 token_version 让旧 token 失效。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="单端登录通过 token_version 让旧 token 失效。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        payload = {
+            "query": "单端登录为什么会让旧 token 失效？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "langchain-failed-not-cache-conversation",
+            "request_id": "langchain-agent-request-failed-001",
+        }
+
+        response1 = self.client.post(
+            "/api/knowledge-documents/langchain-agent-ask/",
+            payload,
+            format="json",
+        )
+        response2 = self.client.post(
+            "/api/knowledge-documents/langchain-agent-ask/",
+            payload,
+            format="json",
+        )
+
+        self.assertEqual(response1.status_code, 500)
+        self.assertEqual(response2.status_code, 200)
+
+        self.assertEqual(response2.data["data"]["answer"], "第二次 LangChain-style Agent 调用成功")
+        self.assertFalse(response2.data["data"]["idempotent"])
+
+        self.assertEqual(mock_call_ai_service.call_count, 2)
+
+        hit_step = AiTraceStepLog.objects.filter(
+            conversation_id="langchain-failed-not-cache-conversation",
+            user=self.user,
+            step="langchain_agent_idempotent_hit",
+        ).first()
+
+        self.assertIsNone(hit_step)
+    
 
 
 class AICallLogApiTests(TestCase):

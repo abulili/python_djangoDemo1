@@ -76,6 +76,8 @@ from .utils import check_user_ai_rate_limit, check_user_task_status_rate_limit
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from .agent_tools import run_agent_tools
 
+from ai_log.langchain_agent_service import run_langchain_style_agent
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -927,6 +929,88 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "conversation_id": conversation_id,
             "tools": tool_result["tools"],
             "references": tool_result["knowledge"]["results"],
+            "idempotent": False,
+        }
+
+        if request_id:
+            cache.set(idempotent_key, response_data, timeout=300)
+
+        return success_response(response_data)
+
+    @action(detail=False, methods=['post'], url_path='langchain-agent-ask', throttle_classes=[AICallThrottle])
+    def langchain_agent_ask(self, request):
+        query = request.data.get("query", "")
+        top_k = int(request.data.get("top_k", 3))
+        search_type = request.data.get("search_type", "hybrid")
+        model_key = request.data.get("model", getattr(settings, "DEFAULT_AI_MODEL", "deepseek"))
+        conversation_id = request.data.get("conversation_id")
+        trace_id = getattr(request, "trace_id", "")
+        request_id = request.data.get("request_id")
+
+        if not query.strip():
+            return error_response("请提供query", code=400)
+
+        if request_id:
+            idempotent_key = f"langchain_agent_ask_idempotent:{request.user.id}:{request_id}"
+            cached_result = cache.get(idempotent_key)
+
+            if cached_result:
+                AiTraceStepLog.objects.create(
+                    user=request.user,
+                    trace_id=trace_id,
+                    conversation_id=cached_result.get("conversation_id", conversation_id or ""),
+                    step="langchain_agent_idempotent_hit",
+                    query=query,
+                    detail={
+                        "request_id": request_id,
+                        "type": "langchain_agent_ask",
+                        "answer_length": len(cached_result.get("answer", "")),
+                        "references_count": len(cached_result.get("references", [])),
+                        "tool_count": len(cached_result.get("tools", [])),
+                        "framework": "langchain-style",
+                    },
+                    success=True,
+                )
+
+                return success_response({
+                    **cached_result,
+                    "idempotent": True,
+                }, message="重复请求已复用原结果")
+
+        allowed, current_count = check_user_ai_rate_limit(request.user.id)
+        if not allowed:
+            return error_response(
+                "请求过于频繁，请稍后再试",
+                code=429,
+                data={
+                    "current_count": current_count,
+                    "limit": 10,
+                    "window_seconds": 60,
+                },
+            )
+
+        result = run_langchain_style_agent(
+            user=request.user,
+            query=query,
+            conversation_id=conversation_id,
+            top_k=top_k,
+            search_type=search_type,
+            model_key=model_key,
+            trace_id=trace_id,
+            call_ai_service=call_ai_service,
+        )
+
+        if not result["success"]:
+            return error_response(result["error"], code=500)
+
+        response_data = {
+            "query": result["query"],
+            "search_type": result["search_type"],
+            "answer": result["answer"],
+            "conversation_id": result["conversation_id"],
+            "tools": result["tools"],
+            "references": result["references"],
+            "framework": result["framework"],
             "idempotent": False,
         }
 
