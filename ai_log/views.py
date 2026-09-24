@@ -1017,6 +1017,10 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "framework": result["framework"],
             "using_langchain_core": result.get("using_langchain_core", False),
             "idempotent": False,
+            "structured_output": result.get("structured_output", False),
+            "confidence": result.get("confidence", "unknown"),
+            "used_tools": result.get("used_tools", []),
+            "missing_info": result.get("missing_info", []),
         }
 
         if request_id:

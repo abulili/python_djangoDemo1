@@ -100,20 +100,20 @@ def load_agent_context(input_data):
         "business_prompt": input_data["business_prompt"],
     }
 
-def call_existing_ai(prompt_value):
-    prompt_text = prompt_value.to_string()
+# def call_existing_ai(prompt_value):
+#     prompt_text = prompt_value.to_string()
 
-    result, success = call_ai_service(
-        prompt=prompt_text,
-        model_key=model_key,
-        user=user,
-    )
+#     result, success = call_ai_service(
+#         prompt=prompt_text,
+#         model_key=model_key,
+#         user=user,
+#     )
 
-    return {
-        "prompt": prompt_text,
-        "result": result,
-        "success": success,
-    }
+#     return {
+#         "prompt": prompt_text,
+#         "result": result,
+#         "success": success,
+#     }
 
 def format_agent_response(chain_output):
     return {
@@ -123,23 +123,23 @@ def format_agent_response(chain_output):
         "framework": "langchain-core-runnable-sequence",
     }
 
-chain = (
-    RunnableLambda(load_agent_context)
-    | prompt_template
-    | RunnableLambda(call_existing_ai)
-    | RunnableLambda(format_agent_response)
-)
+# chain = (
+#     RunnableLambda(load_agent_context)
+#     | prompt_template
+#     | RunnableLambda(call_existing_ai)
+#     | RunnableLambda(format_agent_response)
+# )
 
-chain_input = {
-    "query": query,
-    "tool_plan": tool_plan,
-    "memory_context": memory_context,
-    "knowledge_context": knowledge_context,
-    "workflow_context": workflow_context,
-    "business_prompt": business_prompt,
-}
+# chain_input = {
+#     "query": query,
+#     "tool_plan": tool_plan,
+#     "memory_context": memory_context,
+#     "knowledge_context": knowledge_context,
+#     "workflow_context": workflow_context,
+#     "business_prompt": business_prompt,
+# }
 
-chain_output = chain.invoke(chain_input)
+# chain_output = chain.invoke(chain_input)
 
 def run_langchain_style_agent(
     *,
@@ -379,7 +379,16 @@ def run_langchain_style_agent(
 2. 如果使用了工作流工具，要结合申请数量、待审批数量、最近申请说明。
 3. 如果资料不足，请明确说明缺少什么。
 4. 回答要简洁、可用于业务判断。
+5. 请按 JSON 格式返回，不要添加 JSON 之外的说明文字：
+{{
+  "answer": "你的最终回答",
+  "confidence": "high|medium|low",
+  "used_tools": ["conversation_memory", "knowledge_retriever", "workflow_summary"],
+  "missing_info": []
+}}
 """
+# confidence 是模型自己给答案的置信度，missing_info 表示回答这个问题还缺什么信息，structured这次 AI 回复有没有被成功解析成 JSON
+# tool_outputs记录了真正跑过哪些工具，根据 prompt 里看到的工具结果自己填写
     ),
 ])
 
@@ -429,7 +438,18 @@ def run_langchain_style_agent(
         "workflow_context": workflow_context,
         "business_prompt": business_prompt,
     }
+    """
+    把 chain_input 交给 chain
+    然后按 chain 里定义的顺序一段一段执行
+    上一段的输出，会变成下一段的输入
 
+    chain_input
+    -> load_agent_context(chain_input)
+    -> prompt_template.invoke(...)
+    -> call_existing_ai(prompt_value)
+    -> format_agent_response(chain_output)
+    -> 最终 chain_output
+    """
     chain_output = chain.invoke(chain_input)
 
     prompt = chain_output["prompt"]
@@ -449,7 +469,8 @@ def run_langchain_style_agent(
             "knowledge_hit_count": len(knowledge_result.get("results", [])),
             "memory_message_count": memory_result.get("message_count", 0),
             "used_workflow": workflow_result is not None,
-            "chain_type": "ChatPromptTemplate|RunnableLambda",
+            #"chain_type": "ChatPromptTemplate|RunnableLambda",
+            "chain_type": "RunnableLambda|prompt_template|RunnableLambda|RunnableLambda",
             "framework": "langchain-core-runnable-sequence",
             "business_template_name": business_template_name or "",
             "business_template_used": business_template_used,
@@ -486,7 +507,33 @@ def run_langchain_style_agent(
             "using_langchain_core": using_langchain_core,
         }
 
-    answer = result.get("reply", "")
+    # answer = result.get("reply", "")
+
+    def parse_agent_answer(raw_answer):
+        try:
+            parsed = json.loads(raw_answer)
+            if not isinstance(parsed, dict):
+                raise ValueError("parsed answer is not dict")
+
+            return {
+                "answer": parsed.get("answer", raw_answer),
+                "confidence": parsed.get("confidence", "unknown"),
+                "used_tools": parsed.get("used_tools", []),
+                "missing_info": parsed.get("missing_info", []),
+                "structured": True,
+            }
+        except Exception:
+            return {
+                "answer": raw_answer,
+                "confidence": "unknown",
+                "used_tools": [],
+                "missing_info": [],
+                "structured": False,
+            }
+
+    raw_answer = result.get("reply", "")
+    parsed_answer = parse_agent_answer(raw_answer)
+    answer = parsed_answer["answer"]
 
     AICallLog.objects.create(
         conversation_id=conversation_id,
@@ -523,6 +570,10 @@ def run_langchain_style_agent(
             "total_tokens": result.get("total_tokens", 0),
             "cost": result.get("cost", 0.0),
             "framework": "langchain-core-runnable-sequence",
+            "structured_output": parsed_answer["structured"],
+            "confidence": parsed_answer["confidence"],
+            "used_tools": parsed_answer["used_tools"],
+            "missing_info_count": len(parsed_answer["missing_info"]),
         },
     )
 
@@ -536,6 +587,10 @@ def run_langchain_style_agent(
         "references": knowledge_result.get("results", []),
         "framework": "langchain-core-runnable-sequence",
         "using_langchain_core": True,
+        "structured_output": parsed_answer["structured"],
+        "confidence": parsed_answer["confidence"],
+        "used_tools": parsed_answer["used_tools"],
+        "missing_info": parsed_answer["missing_info"],
     }
 
 

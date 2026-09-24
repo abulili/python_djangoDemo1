@@ -42,6 +42,8 @@ from django.core.management import call_command
 from io import StringIO
 from workflows.models import WorkflowRequest
 
+import json
+
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
         # 测文档切片
@@ -988,7 +990,12 @@ class KnowledgeDocumentApiTests(TestCase):
     @patch("ai_log.views.call_ai_service")
     def test_langchain_agent_ask_uses_tools_and_records_trace(self, mock_call_ai_service):
         mock_call_ai_service.return_value = ({
-            "reply": "LangChain-style Agent 判断这笔付款申请需要审批。",
+            "reply": json.dumps({
+                "answer": "LangChain Agent 判断这笔付款申请需要审批。",
+                "confidence": "high",
+                "used_tools": ["knowledge_retriever", "workflow_summary"],
+                "missing_info": [],
+            }, ensure_ascii=False),
             "prompt_tokens": 20,
             "completion_tokens": 10,
             "total_tokens": 30,
@@ -1034,10 +1041,13 @@ class KnowledgeDocumentApiTests(TestCase):
         data = response.data["data"]
         self.assertEqual(data["framework"], "langchain-core-runnable-sequence")
         self.assertTrue(data["using_langchain_core"])
-        self.assertEqual(data["answer"], "LangChain-style Agent 判断这笔付款申请需要审批。")
+        self.assertEqual(data["answer"], "LangChain Agent 判断这笔付款申请需要审批。")
         self.assertEqual(data["conversation_id"], "langchain-agent-conversation")
         self.assertEqual(data["search_type"], "hybrid")
         self.assertFalse(data["idempotent"])
+        self.assertTrue(data["structured_output"])
+        self.assertEqual(data["confidence"], "high")
+        self.assertIn("knowledge_retriever", data["used_tools"])
 
         tool_names = [item["tool"] for item in data["tools"]]
         self.assertIn("conversation_memory", tool_names)
@@ -1077,7 +1087,7 @@ class KnowledgeDocumentApiTests(TestCase):
 
         self.assertEqual(
             prompt_step.detail["chain_type"],
-            "ChatPromptTemplate|RunnableLambda",
+            "RunnableLambda|prompt_template|RunnableLambda|RunnableLambda",
         )
         self.assertEqual(prompt_step.detail["framework"], "langchain-core-runnable-sequence")
 
