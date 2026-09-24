@@ -21,6 +21,86 @@ def route_agents(query):
     agents.append("answer")
     return agents
 
+"""
+关键词要手动维护
+语义理解弱
+
+便宜
+快
+稳定
+可测试
+"""
+def route_agents_by_key(query):
+    query = query or ""
+
+    evaluation = {
+        "need_memory": True,
+        "need_retriever_score": 0,
+        "need_workflow_score": 0,
+        "need_answer": True,
+        "matched_retriever_keywords": [],
+        "matched_workflow_keywords": [],
+    }
+
+    retriever_keywords = [
+        "知识库",
+        "文档",
+        "规则",
+        "说明",
+        "怎么实现",
+        "原理",
+        "RAG",
+        "LangChain",
+        "trace",
+        "日志",
+    ]
+
+    workflow_keywords = [
+        "工作流",
+        "审批",
+        "申请",
+        "付款",
+        "打款",
+        "流程",
+        "待办",
+        "通过",
+        "驳回",
+        "workflow",
+        "approve",
+        "approval",
+        "payment",
+        "request",
+    ]
+
+    for keyword in retriever_keywords:
+        if keyword in query:
+            evaluation["need_retriever_score"] += 1
+            evaluation["matched_retriever_keywords"].append(keyword)
+
+    for keyword in workflow_keywords:
+        if keyword in query:
+            evaluation["need_workflow_score"] += 1
+            evaluation["matched_workflow_keywords"].append(keyword)
+
+    agents = ["memory"]
+
+    if evaluation["need_retriever_score"] > 0:
+        agents.append("retriever")
+
+    if evaluation["need_workflow_score"] > 0:
+        agents.append("workflow")
+
+    # 如果 key 没判断出任何专业 agent，默认查知识库，避免 answer 空转
+    if "retriever" not in agents and "workflow" not in agents:
+        agents.append("retriever")
+
+    agents.append("answer")
+
+    return {
+        "agents": agents,
+        "evaluation": evaluation,
+    }
+
 def run_retriever_agent(*, user, query, top_k, search_type):
     return retrieve_knowledge_tool(
         user=user,
@@ -111,11 +191,18 @@ def run_multi_agent(
     model_key,
     trace_id,
     call_ai_service,
+    router_type="rule",
 ):
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
 
-    selected_agents = route_agents(query)
+    key_result = None
+
+    if router_type == "key":
+        key_result = route_agents_by_key(query)
+        selected_agents = key_result["agents"]
+    else:
+        selected_agents = route_agents(query)
 
     AiTraceStepLog.objects.create(
         user=user,
@@ -128,8 +215,23 @@ def run_multi_agent(
             "model": model_key,
             "top_k": top_k,
             "search_type": search_type,
+            "router_type": router_type,
         },
     )
+
+    if key_result:
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="multi_agent_key_router",
+            query=query,
+            detail={
+                "router_type": "key",
+                "selected_agents": selected_agents,
+                "evaluation": key_result["evaluation"],
+            },
+        )
 
     context_results = run_parallel_context_agents(
         selected_agents=selected_agents,
@@ -281,6 +383,7 @@ def run_multi_agent(
             "answer_length": len(answer),
             "knowledge_hit_count": len(knowledge_result.get("results", [])),
             "used_workflow_agent": workflow_result is not None,
+            "router_type": router_type,
         },
     )
 
@@ -293,6 +396,8 @@ def run_multi_agent(
         "agents": selected_agents,
         "references": knowledge_result.get("results", []),
         "framework": "multi-agent-router",
+        "router_type": router_type,
+        "key_evaluation": key_result["evaluation"] if key_result else {},
     }    
 
 def run_parallel_context_agents(
@@ -304,7 +409,7 @@ def run_parallel_context_agents(
     top_k,
     search_type,
 ):
-    
+
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_agent = {}
 

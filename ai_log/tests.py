@@ -1371,6 +1371,77 @@ class KnowledgeDocumentApiTests(TestCase):
 
         mock_call_ai_service.assert_called_once()
 
+    @patch("ai_log.views.call_ai_service")
+    def test_multi_agent_ask_can_use_key_router(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "Key MultiAgent 判断这笔付款申请需要审批。",
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 0.2,
+        }, True)
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要走审批流程。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="付款申请超过 5000 元需要走审批流程。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        WorkflowRequest.objects.create(
+            applicant=self.user,
+            current_approver=self.user,
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="测试付款申请",
+            description="测试付款申请说明",
+            amount="6000.00",
+            status=WorkflowRequest.STATUS_PENDING,
+        )
+
+        response = self.client.post("/api/knowledge-documents/multi-agent-ask/", {
+            "query": "根据付款审批规则，这笔付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "multi-agent-key-conversation",
+            "router_type": "key",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["router_type"], "key")
+        self.assertEqual(data["framework"], "multi-agent-router")
+        self.assertIn("retriever", data["agents"])
+        self.assertIn("workflow", data["agents"])
+        self.assertIn("answer", data["agents"])
+        self.assertGreater(data["key_evaluation"]["need_retriever_score"], 0)
+        self.assertGreater(data["key_evaluation"]["need_workflow_score"], 0)
+
+        trace_id = response.headers.get("X-Trace-Id")
+        self.assertTrue(trace_id)
+
+        step_names = list(
+            AiTraceStepLog.objects.filter(
+                trace_id=trace_id,
+                user=self.user,
+            )
+            .order_by("created_at")
+            .values_list("step", flat=True)
+        )
+
+        self.assertIn("multi_agent_key_router", step_names)
+        self.assertIn("multi_agent_parallel_context_done", step_names)
+        self.assertIn("multi_agent_done", step_names)
+
+        mock_call_ai_service.assert_called_once()
+
+
 
 class AICallLogApiTests(TestCase):
     def setUp(self):
@@ -1586,6 +1657,7 @@ class AICallLogApiTests(TestCase):
         self.assertEqual(failed_log.error_message, "模型调用失败")
         self.assertEqual(failed_log.detail["model"], "deepseek")
 
+    
 class AiTraceStepLogApiTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="ragtraceuser", password="123456")

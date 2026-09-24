@@ -1038,6 +1038,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         model_key = request.data.get("model", getattr(settings, "DEFAULT_AI_MODEL", "deepseek"))
         conversation_id = request.data.get("conversation_id")
         trace_id = getattr(request, "trace_id", "")
+        router_type = request.data.get("router_type", "rule")
 
         if not query.strip():
             return error_response("请提供query", code=400)
@@ -1063,6 +1064,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             model_key=model_key,
             trace_id=trace_id,
             call_ai_service=call_ai_service,
+            router_type=router_type,
         )
 
         if not result["success"]:
@@ -1076,6 +1078,8 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "agents": result["agents"],
             "references": result["references"],
             "framework": result["framework"],
+            "router_type": result.get("router_type", "rule"),
+            "key_evaluation": result.get("key_evaluation", {}),
         })
         
 
