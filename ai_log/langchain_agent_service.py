@@ -90,6 +90,57 @@ def build_optional_langchain_tools(style_tools):
 
     return langchain_tools
 
+def load_agent_context(input_data):
+    return {
+        "tool_plan": json.dumps(input_data["tool_plan"], ensure_ascii=False),
+        "memory_context": input_data["memory_context"] or "暂无会话记忆",
+        "knowledge_context": input_data["knowledge_context"] or "暂无知识库命中",
+        "workflow_context": input_data["workflow_context"],
+        "query": input_data["query"],
+        "business_prompt": input_data["business_prompt"],
+    }
+
+def call_existing_ai(prompt_value):
+    prompt_text = prompt_value.to_string()
+
+    result, success = call_ai_service(
+        prompt=prompt_text,
+        model_key=model_key,
+        user=user,
+    )
+
+    return {
+        "prompt": prompt_text,
+        "result": result,
+        "success": success,
+    }
+
+def format_agent_response(chain_output):
+    return {
+        "prompt": chain_output["prompt"],
+        "result": chain_output["result"],
+        "success": chain_output["success"],
+        "framework": "langchain-core-runnable-sequence",
+    }
+
+chain = (
+    RunnableLambda(load_agent_context)
+    | prompt_template
+    | RunnableLambda(call_existing_ai)
+    | RunnableLambda(format_agent_response)
+)
+
+chain_input = {
+    "query": query,
+    "tool_plan": tool_plan,
+    "memory_context": memory_context,
+    "knowledge_context": knowledge_context,
+    "workflow_context": workflow_context,
+    "business_prompt": business_prompt,
+}
+
+chain_output = chain.invoke(chain_input)
+
 def run_langchain_style_agent(
     *,
     user,
@@ -362,16 +413,24 @@ def run_langchain_style_agent(
 
     chain_output = call_existing_ai(prompt_value)
     """
-    chain = prompt_template | RunnableLambda(call_existing_ai)
+    chain = (
+        RunnableLambda(load_agent_context)
+        | prompt_template
+        | RunnableLambda(call_existing_ai)
+        | RunnableLambda(format_agent_response)
+    )
 
-    chain_output = chain.invoke({
-        "tool_plan": json.dumps(tool_plan, ensure_ascii=False),
-        "memory_context": memory_context or "暂无会话记忆",
-        "knowledge_context": knowledge_context or "暂无知识库命中",
-        "workflow_context": workflow_context,
+    # 已经在load_agent_context处理过了
+    chain_input = {
         "query": query,
+        "tool_plan": tool_plan,
+        "memory_context": memory_context,
+        "knowledge_context": knowledge_context,
+        "workflow_context": workflow_context,
         "business_prompt": business_prompt,
-    })
+    }
+
+    chain_output = chain.invoke(chain_input)
 
     prompt = chain_output["prompt"]
     result = chain_output["result"]
