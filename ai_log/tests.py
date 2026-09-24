@@ -13,6 +13,7 @@ from .models import (
     KnowledgeChunk,
     KnowledgeDocument,
     AiTraceStepLog,
+    PromptTemplate,
 )
 from .views import split_text_to_chunks, simple_keyword_score
 from .services import calculate_cost
@@ -1007,18 +1008,32 @@ class KnowledgeDocumentApiTests(TestCase):
             embedding=[0.1, 0.2, 0.3],
         )
 
+        PromptTemplate.objects.create(
+            name="payment_judge",
+            description="付款审批判断模板",
+            content="你是{role}，请{task}",
+            variables=["role", "task"],
+            is_active=True,
+        )
+
         response = self.client.post("/api/knowledge-documents/langchain-agent-ask/", {
             "query": "这笔付款申请要不要审批？",
             "top_k": 3,
             "search_type": "hybrid",
             "conversation_id": "langchain-agent-conversation",
             "request_id": "langchain-agent-request-001",
+            "template_name": "payment_judge",
+            "template_vars": {
+                "role": "审批助手",
+                "task": "判断付款是否需要审批",
+            }
         }, format="json")
 
         self.assertEqual(response.status_code, 200)
 
         data = response.data["data"]
-        self.assertEqual(data["framework"], "langchain-style")
+        self.assertEqual(data["framework"], "langchain-core-runnable-sequence")
+        self.assertTrue(data["using_langchain_core"])
         self.assertEqual(data["answer"], "LangChain-style Agent 判断这笔付款申请需要审批。")
         self.assertEqual(data["conversation_id"], "langchain-agent-conversation")
         self.assertEqual(data["search_type"], "hybrid")
@@ -1051,6 +1066,34 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("langchain_tool_workflow", step_names)
         self.assertIn("langchain_prompt_build", step_names)
         self.assertIn("langchain_agent_done", step_names)
+        self.assertIn("using_langchain_core", data)
+        self.assertIn("langchain_business_prompt", step_names)
+
+        prompt_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="langchain_prompt_build",
+        )
+
+        self.assertEqual(
+            prompt_step.detail["chain_type"],
+            "ChatPromptTemplate|RunnableLambda",
+        )
+        self.assertEqual(prompt_step.detail["framework"], "langchain-core-runnable-sequence")
+
+        self.assertEqual(prompt_step.detail["business_template_name"], "payment_judge")
+        self.assertTrue(prompt_step.detail["business_template_used"])   
+
+        business_prompt_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="langchain_business_prompt",
+        )
+
+        self.assertEqual(business_prompt_step.detail["template_name"], "payment_judge")
+        self.assertTrue(business_prompt_step.detail["template_used"])
+        self.assertGreater(business_prompt_step.detail["business_prompt_length"], 0)
+        
 
         mock_call_ai_service.assert_called_once()
 
@@ -1117,6 +1160,7 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIsNotNone(hit_step)
         self.assertEqual(hit_step.detail["request_id"], "langchain-agent-request-002")
         self.assertEqual(hit_step.detail["type"], "langchain_agent_ask")
+        self.assertIn("using_langchain_core", response2.data["data"])
 
 
     @patch("ai_log.views.call_ai_service")
@@ -1174,6 +1218,7 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertFalse(response2.data["data"]["idempotent"])
 
         self.assertEqual(mock_call_ai_service.call_count, 2)
+        self.assertIn("using_langchain_core", response2.data["data"])
 
         hit_step = AiTraceStepLog.objects.filter(
             conversation_id="langchain-failed-not-cache-conversation",
@@ -1183,6 +1228,48 @@ class KnowledgeDocumentApiTests(TestCase):
 
         self.assertIsNone(hit_step)
     
+    @patch("ai_log.views.call_ai_service")
+    def test_langchain_agent_ask_returns_400_when_business_template_missing(self, mock_call_ai_service):
+        response = self.client.post("/api/knowledge-documents/langchain-agent-ask/", {
+            "query": "这笔付款要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "langchain-missing-template-conversation",
+            "template_name": "missing_template",
+            "template_vars": {
+                "role": "审批助手",
+                "task": "判断付款是否需要审批",
+            },
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("业务 Prompt 模板不存在或未启用", response.data["message"])
+        mock_call_ai_service.assert_not_called()
+
+    @patch("ai_log.views.call_ai_service")
+    def test_langchain_agent_ask_returns_400_when_business_template_vars_missing(self, mock_call_ai_service):
+        PromptTemplate.objects.create(
+            name="payment_judge_missing_vars",
+            description="付款审批判断模板",
+            content="你是{role}，请{task}",
+            variables=["role", "task"],
+            is_active=True,
+        )
+
+        response = self.client.post("/api/knowledge-documents/langchain-agent-ask/", {
+            "query": "这笔付款要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "langchain-missing-vars-conversation",
+            "template_name": "payment_judge_missing_vars",
+            "template_vars": {
+                "role": "审批助手",
+            },
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("缺少模板变量", response.data["message"])
+        mock_call_ai_service.assert_not_called()
 
 
 class AICallLogApiTests(TestCase):

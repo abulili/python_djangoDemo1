@@ -946,6 +946,8 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         conversation_id = request.data.get("conversation_id")
         trace_id = getattr(request, "trace_id", "")
         request_id = request.data.get("request_id")
+        business_template_name = request.data.get("template_name")
+        business_template_vars = request.data.get("template_vars") or {}
 
         if not query.strip():
             return error_response("请提供query", code=400)
@@ -998,10 +1000,12 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             model_key=model_key,
             trace_id=trace_id,
             call_ai_service=call_ai_service,
+            business_template_name=business_template_name,
+            business_template_vars=business_template_vars,
         )
 
         if not result["success"]:
-            return error_response(result["error"], code=500)
+            return error_response(result["error"], code=result.get("code", 500))
 
         response_data = {
             "query": result["query"],
@@ -1011,6 +1015,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "tools": result["tools"],
             "references": result["references"],
             "framework": result["framework"],
+            "using_langchain_core": result.get("using_langchain_core", False),
             "idempotent": False,
         }
 

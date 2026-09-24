@@ -37,6 +37,9 @@ httpx==0.24.0
 # 递归字符切分器
 langchain-text-splitters==1.1.2
 
+# LangChain 核心
+langchain-core==1.6.3
+
 # ========== 解决跨域 ==========
 django-cors-headers==4.9.0
 
