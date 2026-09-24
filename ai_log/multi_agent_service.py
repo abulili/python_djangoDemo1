@@ -141,6 +141,7 @@ def run_jev_router_agent(
     result, success = call_jev_service(
         state=query,
         questions=questions,
+        model=model_key,
     )
 
     if not success:
@@ -199,6 +200,91 @@ def run_jev_router_agent(
         "raw": data,
     }
 
+def run_supervisor_agent(
+    *,
+    user,
+    query,
+    model_key,
+    call_ai_service,
+):
+    prompt = f"""
+你是 SupervisorAgent，负责为用户问题选择需要调用的专业 Agent。
+
+可用 Agent：
+- memory：读取会话记忆
+- retriever：查询知识库、文档、规则、技术资料
+- workflow：查询审批、付款、申请、待办、流程状态
+- answer：整合所有 Agent 结果并生成最终回答，必须选择
+
+请只返回 JSON，不要返回 JSON 之外的内容：
+{{
+  "selected_agents": ["memory", "retriever", "workflow", "answer"],
+  "reason": "选择这些 Agent 的原因"
+}}
+
+用户问题：
+{query}
+"""
+
+    result, success = call_ai_service(
+        prompt=prompt,
+        model_key=model_key,
+        user=user,
+    )
+
+    usage = {
+        "prompt_tokens": result.get("prompt_tokens", 0),
+        "completion_tokens": result.get("completion_tokens", 0),
+        "total_tokens": result.get("total_tokens", 0),
+        "cost": result.get("cost", 0.0),
+        "duration": result.get("duration", 0.0),
+        "model": model_key,
+    }
+
+    if not success:
+        return {
+            "success": False,
+            "selected_agents": route_agents(query),
+            "reason": result.get("reply", "Supervisor 调用失败，使用规则路由"),
+            "usage": usage,
+            "raw": result.get("reply", ""),
+        }
+
+    raw = result.get("reply", "")
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {
+            "success": False,
+            "selected_agents": route_agents(query),
+            "reason": "Supervisor 返回非 JSON，使用规则路由",
+            "usage": usage,
+            "raw": raw,
+        }
+
+    allowed_agents = {"memory", "retriever", "workflow", "answer"}
+    selected_agents = [
+        item for item in parsed.get("selected_agents", [])
+        if item in allowed_agents
+    ]
+
+    if "memory" not in selected_agents:
+        selected_agents.insert(0, "memory")
+
+    if "answer" not in selected_agents:
+        selected_agents.append("answer")
+
+    if "retriever" not in selected_agents and "workflow" not in selected_agents:
+        selected_agents.insert(1, "retriever")
+
+    return {
+        "success": True,
+        "selected_agents": selected_agents,
+        "reason": parsed.get("reason", ""),
+        "usage": usage,
+        "raw": parsed,
+    }
 
 def run_retriever_agent(*, user, query, top_k, search_type):
     return retrieve_knowledge_tool(
@@ -298,6 +384,7 @@ def run_multi_agent(
 
     key_result = None
     jev_result = None
+    supervisor_result = None
 
     if router_type == "key":
         key_result = route_agents_by_key(query)
@@ -311,6 +398,15 @@ def run_multi_agent(
             call_jev_service=call_jev_service,
         )
         selected_agents = jev_result["selected_agents"]
+    elif router_type == "supervisor":
+        router_model_key = router_model_key or model_key
+        supervisor_result = run_supervisor_agent(
+            user=user,
+            query=query,
+            model_key=router_model_key,
+            call_ai_service=call_ai_service,
+        )
+        selected_agents = supervisor_result["selected_agents"]
     else:
         selected_agents = route_agents(query)
 
@@ -357,6 +453,22 @@ def run_multi_agent(
                 "reason": jev_result["reason"],
                 "success": jev_result["success"],
                 "usage": jev_result.get("usage", {}),
+            },
+        )
+
+    if supervisor_result:
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="multi_agent_supervisor",
+            query=query,
+            detail={
+                "router_type": "supervisor",
+                "selected_agents": selected_agents,
+                "reason": supervisor_result.get("reason", ""),
+                "success": supervisor_result.get("success", False),
+                "usage": supervisor_result.get("usage", {}),
             },
         )
 
@@ -528,6 +640,8 @@ def run_multi_agent(
         "jev_evaluation": jev_result["evaluation"] if jev_result else {},
         "jev_reason": jev_result["reason"] if jev_result else "",
         "jev_usage": jev_result.get("usage", {}) if jev_result else {},
+        "supervisor_reason": supervisor_result["reason"] if supervisor_result else "",
+        "supervisor_usage": supervisor_result.get("usage", {}) if supervisor_result else {},
     }    
 
 def run_parallel_context_agents(

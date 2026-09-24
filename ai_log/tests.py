@@ -1548,6 +1548,97 @@ class KnowledgeDocumentApiTests(TestCase):
         mock_call_jev_service.assert_called_once()
         mock_call_ai_service.assert_called_once()
 
+    @patch("ai_log.views.call_ai_service")
+    def test_multi_agent_ask_can_use_supervisor_router(self, mock_call_ai_service):
+        mock_call_ai_service.side_effect = [
+            ({
+                "reply": json.dumps({
+                    "selected_agents": ["memory", "retriever", "workflow", "answer"],
+                    "reason": "问题涉及付款审批规则，需要知识库和工作流信息。",
+                }, ensure_ascii=False),
+                "prompt_tokens": 12,
+                "completion_tokens": 8,
+                "total_tokens": 20,
+                "cost": 0.0002,
+                "duration": 0.1,
+            }, True),
+            ({
+                "reply": "Supervisor MultiAgent 判断这笔付款申请需要审批。",
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+                "cost": 0.001,
+                "duration": 0.2,
+            }, True),
+        ]
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要走审批流程。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="付款申请超过 5000 元需要走审批流程。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        WorkflowRequest.objects.create(
+            applicant=self.user,
+            current_approver=self.user,
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="测试付款申请",
+            description="测试付款申请说明",
+            amount="6000.00",
+            status=WorkflowRequest.STATUS_PENDING,
+        )
+
+        response = self.client.post("/api/knowledge-documents/multi-agent-ask/", {
+            "query": "根据付款审批规则，这笔付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "multi-agent-supervisor-conversation",
+            "router_type": "supervisor",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["router_type"], "supervisor")
+        self.assertEqual(data["framework"], "multi-agent-router")
+        self.assertEqual(data["answer"], "Supervisor MultiAgent 判断这笔付款申请需要审批。")
+        self.assertIn("retriever", data["agents"])
+        self.assertIn("workflow", data["agents"])
+        self.assertIn("answer", data["agents"])
+        self.assertEqual(data["supervisor_usage"]["total_tokens"], 20)
+
+        trace_id = response.headers.get("X-Trace-Id")
+        self.assertTrue(trace_id)
+
+        step_names = list(
+            AiTraceStepLog.objects.filter(
+                trace_id=trace_id,
+                user=self.user,
+            )
+            .order_by("created_at")
+            .values_list("step", flat=True)
+        )
+
+        self.assertIn("multi_agent_supervisor", step_names)
+        self.assertIn("multi_agent_parallel_context_done", step_names)
+        self.assertIn("multi_agent_done", step_names)
+
+        supervisor_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_supervisor",
+        )
+
+        self.assertEqual(supervisor_step.detail["usage"]["total_tokens"], 20)
+        self.assertIn("付款审批", supervisor_step.detail["reason"])
+
+        self.assertEqual(mock_call_ai_service.call_count, 2)
 
 
 class AICallLogApiTests(TestCase):
