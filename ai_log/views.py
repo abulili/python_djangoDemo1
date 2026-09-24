@@ -1080,6 +1080,8 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "framework": result["framework"],
             "router_type": result.get("router_type", "rule"),
             "key_evaluation": result.get("key_evaluation", {}),
+            "jev_evaluation": result.get("jev_evaluation", {}),
+            "jev_reason": result.get("jev_reason", ""),
         })
         
 

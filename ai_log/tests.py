@@ -1441,6 +1441,90 @@ class KnowledgeDocumentApiTests(TestCase):
 
         mock_call_ai_service.assert_called_once()
 
+    @patch("ai_log.views.call_ai_service")
+    def test_multi_agent_ask_can_use_jev_router(self, mock_call_ai_service):
+        # 两次返回
+        mock_call_ai_service.side_effect = [
+            ({
+                "reply": json.dumps({
+                    "need_memory": 1.0,
+                    "need_retriever": 0.9,
+                    "need_workflow": 0.8,
+                    "need_answer": 1.0,
+                    "reason": "问题涉及付款审批规则，需要知识库和工作流信息",
+                }, ensure_ascii=False),
+                "duration": 0.1,
+            }, True),
+            ({
+                "reply": "JEV MultiAgent 判断这笔付款申请需要审批。",
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+                "cost": 0.001,
+                "duration": 0.2,
+            }, True),
+        ]
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要走审批流程。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="付款申请超过 5000 元需要走审批流程。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        WorkflowRequest.objects.create(
+            applicant=self.user,
+            current_approver=self.user,
+            request_type=WorkflowRequest.TYPE_PAYMENT,
+            title="测试付款申请",
+            description="测试付款申请说明",
+            amount="6000.00",
+            status=WorkflowRequest.STATUS_PENDING,
+        )
+
+        response = self.client.post("/api/knowledge-documents/multi-agent-ask/", {
+            "query": "根据付款审批规则，这笔付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "multi-agent-jev-conversation",
+            "router_type": "jev",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["router_type"], "jev")
+        self.assertEqual(data["framework"], "multi-agent-router")
+        self.assertIn("retriever", data["agents"])
+        self.assertIn("workflow", data["agents"])
+        self.assertIn("answer", data["agents"])
+        self.assertGreater(data["jev_evaluation"]["need_retriever"], 0)
+        self.assertGreater(data["jev_evaluation"]["need_workflow"], 0)
+
+        trace_id = response.headers.get("X-Trace-Id")
+        self.assertTrue(trace_id)
+
+        step_names = list(
+            AiTraceStepLog.objects.filter(
+                trace_id=trace_id,
+                user=self.user,
+            )
+            .order_by("created_at")
+            .values_list("step", flat=True)
+        )
+
+        self.assertIn("multi_agent_jev_router", step_names)
+        self.assertIn("multi_agent_parallel_context_done", step_names)
+        self.assertIn("multi_agent_done", step_names)
+        self.assertIn("multi_agent_jev_router", step_names)
+
+        self.assertEqual(mock_call_ai_service.call_count, 2)
+
 
 
 class AICallLogApiTests(TestCase):
