@@ -8,7 +8,7 @@ from ai_log.agent_tools import (
     should_use_workflow_tool,
 )
 from ai_log.models import AICallLog, AiTraceStepLog
-from ai_log.services import save_conversation_messages_to_db
+from ai_log.services import save_conversation_messages_to_db,call_jev_service
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -106,36 +106,41 @@ def run_jev_router_agent(
     user,
     query,
     model_key,
-    call_ai_service,
+    call_jev_service=None,
 ):
-    prompt = f"""
-你是 JEVRouterAgent，负责对用户问题进行结构化评估，并决定需要哪些 Agent。
+    questions = {
+        "need_memory": {
+            "type": "score",
+            "instructions": "How much does this request need conversation memory?",
+            "criteria": [
+                "No memory needed",
+                "Some previous conversation may help",
+                "Conversation memory is required"
+            ],
+        },
+        "need_retriever": {
+            "type": "score",
+            "instructions": "How much does this request need knowledge base, documents, rules, or technical reference?",
+            "criteria": [
+                "No knowledge retrieval needed",
+                "Knowledge retrieval may help",
+                "Knowledge retrieval is required"
+            ],
+        },
+        "need_workflow": {
+            "type": "score",
+            "instructions": "How much does this request need workflow, approval, payment, request, or todo status data?",
+            "criteria": [
+                "No workflow data needed",
+                "Workflow data may help",
+                "Workflow data is required"
+            ],
+        },
+    }
 
-请只返回 JSON，不要返回额外说明。
-
-可用 Agent：
-- memory：读取会话记忆
-- retriever：查询知识库、文档、规则、技术资料
-- workflow：查询审批、付款、申请、待办、流程状态
-- answer：汇总所有 Agent 结果，必须选择
-
-请对每个维度给 0 到 1 的分数：
-{{
-  "need_memory": 1.0,
-  "need_retriever": 0.0,
-  "need_workflow": 0.0,
-  "need_answer": 1.0,
-  "selected_agents": ["memory", "retriever", "answer"],
-  "reason": "选择原因"
-}}
-
-用户问题：
-{query}
-"""
-    result, success = call_ai_service(
-        prompt=prompt,
-        model_key=model_key,
-        user=user,
+    result, success = call_jev_service(
+        state=query,
+        questions=questions,
     )
 
     if not success:
@@ -143,47 +148,37 @@ def run_jev_router_agent(
             "success": False,
             "selected_agents": route_agents(query),
             "evaluation": {},
-            "reason": result.get("reply", "JEV Router 调用失败，使用规则路由"),
+            "reason": result.get("reply", "JEV 调用失败，使用规则路由"),
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cost": 0.0,
+            },
             "raw": result.get("reply", ""),
         }
 
-    raw = result.get("reply", "")
+    data = result.get("jev_response", {})
+    answers = data.get("answers", {})
 
-    try:
-        # 把 JSON 字符串 转成 Python 对象。
-        parsed = json.loads(raw)
-    except Exception:
-        return {
-            "success": False,
-            "selected_agents": route_agents(query),
-            "evaluation": {},
-            "reason": "JEV Router 返回非 JSON，使用规则路由",
-            "raw": raw,
-        }
-
-    need_memory = float(parsed.get("need_memory", 1.0))
-    need_retriever = float(parsed.get("need_retriever", 0.0))
-    need_workflow = float(parsed.get("need_workflow", 0.0))
-    need_answer = float(parsed.get("need_answer", 1.0))
+    need_memory = float(answers.get("need_memory", {}).get("score", 0))
+    need_retriever = float(answers.get("need_retriever", {}).get("score", 0))
+    need_workflow = float(answers.get("need_workflow", {}).get("score", 0))
 
     agents = []
 
-    if need_memory >= 0.3:
+    if need_memory >= 0.5:
         agents.append("memory")
     if need_retriever >= 0.5:
         agents.append("retriever")
     if need_workflow >= 0.5:
         agents.append("workflow")
 
-    if need_answer >= 0.3 or "answer" not in agents:
-        agents.append("answer")
+    if "retriever" not in agents and "workflow" not in agents:
+        agents.append("retriever")
 
-    if "answer" not in agents:
-        agents.append("answer")
-
-    # 避免只剩 answer 空转
-    if agents == ["answer"]:
-        agents.insert(0, "retriever")
+    # 避免空转
+    agents.append("answer")
 
     return {
         "success": True,
@@ -192,10 +187,16 @@ def run_jev_router_agent(
             "need_memory": need_memory,
             "need_retriever": need_retriever,
             "need_workflow": need_workflow,
-            "need_answer": need_answer,
         },
-        "reason": parsed.get("reason", ""),
-        "raw": raw,
+        "reason": "JEV score router",
+        "usage": {
+            "prompt_tokens": result.get("prompt_tokens", 0),
+            "completion_tokens": result.get("completion_tokens", 0),
+            "total_tokens": result.get("total_tokens", 0),
+            "cost": result.get("cost", 0.0),
+            "model": result.get("model", ""),
+        },
+        "raw": data,
     }
 
 
@@ -290,6 +291,7 @@ def run_multi_agent(
     trace_id,
     call_ai_service,
     router_type="rule",
+    router_model_key=None,
 ):
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
@@ -301,11 +303,12 @@ def run_multi_agent(
         key_result = route_agents_by_key(query)
         selected_agents = key_result["agents"]
     elif router_type == "jev":
+        router_model_key = router_model_key or model_key
         jev_result = run_jev_router_agent(
             user=user,
             query=query,
-            model_key=model_key,
-            call_ai_service=call_ai_service,
+            model_key=router_model_key,
+            call_jev_service=call_jev_service,
         )
         selected_agents = jev_result["selected_agents"]
     else:
@@ -353,6 +356,7 @@ def run_multi_agent(
                 "evaluation": jev_result["evaluation"],
                 "reason": jev_result["reason"],
                 "success": jev_result["success"],
+                "usage": jev_result.get("usage", {}),
             },
         )
 
@@ -520,8 +524,10 @@ def run_multi_agent(
         "references": knowledge_result.get("results", []),
         "framework": "multi-agent-router",
         "router_type": router_type,
+        "key_evaluation": key_result["evaluation"] if key_result else {},
         "jev_evaluation": jev_result["evaluation"] if jev_result else {},
         "jev_reason": jev_result["reason"] if jev_result else "",
+        "jev_usage": jev_result.get("usage", {}) if jev_result else {},
     }    
 
 def run_parallel_context_agents(

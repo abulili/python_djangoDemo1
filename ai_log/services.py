@@ -4,6 +4,7 @@ from django.conf import settings
 from django.core.cache import cache
 import time
 import json
+import requests
 from .models import PromptTemplate,Conversation, ConversationMessage
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import timezone as datetime_timezone
@@ -229,6 +230,18 @@ def calculate_cost(model_key, prompt_tokens,completion_tokens,usage=None, real_m
     # 根据模型计算费用
     if model_key == 'agnes':
         return 0.0
+    if model_key == 'jev':
+        input_price = Decimal(str(getattr(settings, "JEV_INPUT_PRICE_USD_PER_M_TOKENS", "0.042")))
+        output_price = Decimal(str(getattr(settings, "JEV_OUTPUT_PRICE_USD_PER_M_TOKENS", "0")))
+        usd_to_cny = Decimal(str(getattr(settings, "USD_TO_CNY_RATE", "7.2")))
+
+        cost_usd = (
+            Decimal(prompt_tokens) / Decimal(1000000) * input_price
+            + Decimal(completion_tokens) / Decimal(1000000) * output_price
+        )
+
+        cost_cny = cost_usd * usd_to_cny
+        return float(cost_cny.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
     if model_key == 'deepseek':
         model_name = real_model_name or "deepseek-v4-flash"
         price_config = DEEPSEEK_PRICING.get(model_name, DEEPSEEK_PRICING.get("deepseek-v4-flash"))
@@ -388,3 +401,67 @@ def render_prompt_content(content, varibles=None):
         return content.format(**varibles)
     return content
     
+def call_jev_service(*, state, questions, model=None):
+    model_config  = settings.AI_MODELS.get("jev")
+    model = model or model_config.get("default_model")
+    api_key = model_config.get("api_key")
+    if not api_key:
+        return {
+            "reply": "未配置 TYPESAFE_API_KEY 或 JEV_API_KEY",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0,
+        }, False
+
+    
+    
+    try:
+        response = requests.post(
+            model_config['base_url'],
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "state": state,
+                "model": model,
+                "questions": questions,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        usage = data.get("usage", {})
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+
+        cost = calculate_cost(
+            "jev",
+            input_tokens,
+            output_tokens,
+            real_model_name=data.get("model", model),
+        )
+
+        return {
+            "reply": json.dumps(data, ensure_ascii=False),
+            "jev_response": data,
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cost": cost,
+            "duration": 0.0,
+            "model": data.get("model", model),
+        }, True
+
+    except Exception as exc:
+        return {
+            "reply": f"JEV 调用失败：{str(exc)}",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0,
+        }, False
+
+

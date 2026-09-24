@@ -1035,7 +1035,18 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         query = request.data.get("query", "")
         top_k = int(request.data.get("top_k", 3))
         search_type = request.data.get("search_type", "hybrid")
-        model_key = request.data.get("model", getattr(settings, "DEFAULT_AI_MODEL", "deepseek"))
+        model_key = request.data.get(
+            "model",
+            getattr(
+                settings,
+                "DEFAULT_MULTI_AGENT_ANSWER_MODEL",
+                getattr(settings, "DEFAULT_AI_MODEL", "deepseek"),
+            ),
+        )
+        router_model_key = request.data.get(
+            "router_model",
+            getattr(settings, "DEFAULT_JEV_ROUTER_MODEL", model_key),
+        )   
         conversation_id = request.data.get("conversation_id")
         trace_id = getattr(request, "trace_id", "")
         router_type = request.data.get("router_type", "rule")
@@ -1065,6 +1076,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             trace_id=trace_id,
             call_ai_service=call_ai_service,
             router_type=router_type,
+            router_model_key=router_model_key,
         )
 
         if not result["success"]:
@@ -1082,6 +1094,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "key_evaluation": result.get("key_evaluation", {}),
             "jev_evaluation": result.get("jev_evaluation", {}),
             "jev_reason": result.get("jev_reason", ""),
+            "jev_usage": result.get("jev_usage", {}),
         })
         
 

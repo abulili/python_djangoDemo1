@@ -1440,30 +1440,40 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("multi_agent_done", step_names)
 
         mock_call_ai_service.assert_called_once()
-
+    
+    # 离函数近的 patch 先传进来
+    @patch("ai_log.multi_agent_service.call_jev_service")
     @patch("ai_log.views.call_ai_service")
-    def test_multi_agent_ask_can_use_jev_router(self, mock_call_ai_service):
-        # 两次返回
-        mock_call_ai_service.side_effect = [
-            ({
-                "reply": json.dumps({
-                    "need_memory": 1.0,
-                    "need_retriever": 0.9,
-                    "need_workflow": 0.8,
-                    "need_answer": 1.0,
-                    "reason": "问题涉及付款审批规则，需要知识库和工作流信息",
-                }, ensure_ascii=False),
-                "duration": 0.1,
-            }, True),
-            ({
-                "reply": "JEV MultiAgent 判断这笔付款申请需要审批。",
-                "prompt_tokens": 20,
-                "completion_tokens": 10,
-                "total_tokens": 30,
-                "cost": 0.001,
-                "duration": 0.2,
-            }, True),
-        ]
+    def test_multi_agent_ask_can_use_jev_router(self, mock_call_ai_service, mock_call_jev_service):
+        mock_call_jev_service.return_value = ({
+            "jev_response": {
+                "model": "jev-latest",
+                "answers": {
+                    "need_memory": {"score": 1.0},
+                    "need_retriever": {"score": 0.9},
+                    "need_workflow": {"score": 0.8},
+                },
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                },
+            },
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "cost": 0.00003,
+            "duration": 0.1,
+            "model": "jev-latest",
+        }, True)
+
+        mock_call_ai_service.return_value = ({
+            "reply": "JEV MultiAgent 判断这笔付款申请需要审批。",
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 0.2,
+        }, True)
 
         document = KnowledgeDocument.objects.create(
             user=self.user,
@@ -1521,9 +1531,22 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("multi_agent_jev_router", step_names)
         self.assertIn("multi_agent_parallel_context_done", step_names)
         self.assertIn("multi_agent_done", step_names)
-        self.assertIn("multi_agent_jev_router", step_names)
 
-        self.assertEqual(mock_call_ai_service.call_count, 2)
+        self.assertEqual(data["jev_usage"]["total_tokens"], 120)
+        self.assertEqual(data["jev_usage"]["model"], "jev-latest")
+
+        jev_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_jev_router",
+        )
+
+        self.assertEqual(jev_step.detail["evaluation"]["need_retriever"], 0.9)
+        self.assertEqual(jev_step.detail["usage"]["total_tokens"], 120)
+        self.assertEqual(jev_step.detail["usage"]["model"], "jev-latest")
+
+        mock_call_jev_service.assert_called_once()
+        mock_call_ai_service.assert_called_once()
 
 
 

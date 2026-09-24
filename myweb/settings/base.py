@@ -235,9 +235,17 @@ AI_MODELS = {
         'api_key': os.getenv('AGNES_API_KEY'),
         'base_url': 'https://apihub.agnes-ai.com/v1',
         'default_model': 'agnes-2.0-flash',
+    },
+    'jev':{
+        'name': 'jev',
+        'api_key': os.getenv('JEV_API_KEY'),
+        'base_url': 'https://api.typesafe.ai/v1/systemone',
+        'default_model': 'jev-latest',
     }
 }
 DEFAULT_AI_MODEL = 'deepseek'
+DEFAULT_JEV_ROUTER_MODEL = os.getenv("DEFAULT_JEV_ROUTER_MODEL", DEFAULT_AI_MODEL)
+DEFAULT_MULTI_AGENT_ANSWER_MODEL = os.getenv("DEFAULT_MULTI_AGENT_ANSWER_MODEL", DEFAULT_AI_MODEL)
 
 FEISHU_BOT_WEBHOOK = os.getenv('FEISHU_BOT_WEBHOOK', '')
 AI_NOTIFY_ENABLED = os.getenv('AI_NOTIFY_ENABLED', 'false').lower() == 'true'
