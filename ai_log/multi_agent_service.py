@@ -10,6 +10,8 @@ from ai_log.agent_tools import (
 from ai_log.models import AICallLog, AiTraceStepLog
 from ai_log.services import save_conversation_messages_to_db
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 def route_agents(query):
     agents =  ["retriever"]
 
@@ -93,6 +95,12 @@ def run_answer_agent(
         "answer": result.get("reply", ""),
     }
 
+def run_memory_agent(*, user, conversation_id):
+    return get_conversation_memory_tool(
+        user=user,
+        conversation_id=conversation_id,
+    )
+
 def run_multi_agent(
     *,
     user,
@@ -123,10 +131,32 @@ def run_multi_agent(
         },
     )
 
-    memory_result = get_conversation_memory_tool(
+    context_results = run_parallel_context_agents(
+        selected_agents=selected_agents,
         user=user,
+        query=query,
         conversation_id=conversation_id,
+        top_k=top_k,
+        search_type=search_type,
     )
+
+    AiTraceStepLog.objects.create(
+        user=user,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+        step="multi_agent_parallel_context_done",
+        query=query,
+        detail={
+            "parallel_agents": list(context_results.keys()),
+            "parallel_agent_count": len(context_results),
+        },
+    )
+
+    memory_result = context_results.get("memory") or {
+        "tool": "conversation_memory",
+        "message_count": 0,
+        "messages": [],
+    }
 
     AiTraceStepLog.objects.create(
         user=user,
@@ -140,7 +170,7 @@ def run_multi_agent(
         },
     )
 
-    knowledge_result = {
+    knowledge_result = context_results.get("retriever") or {
         "tool": "retrieve_knowledge",
         "results": [],
         "search_type": search_type,
@@ -148,12 +178,12 @@ def run_multi_agent(
     }
 
     if "retriever" in selected_agents:
-        knowledge_result = run_retriever_agent(
-            user=user,
-            query=query,
-            top_k=top_k,
-            search_type=search_type,
-        )
+        # knowledge_result = run_retriever_agent(
+        #     user=user,
+        #     query=query,
+        #     top_k=top_k,
+        #     search_type=search_type,
+        # )
 
         AiTraceStepLog.objects.create(
             user=user,
@@ -167,11 +197,9 @@ def run_multi_agent(
             },
         )
 
-    workflow_result = None
+    workflow_result = context_results.get("workflow") or None
 
-    if "workflow" in selected_agents:
-        workflow_result = run_workflow_agent(user=user)
-
+    if workflow_result:
         AiTraceStepLog.objects.create(
             user=user,
             trace_id=trace_id,
@@ -267,6 +295,100 @@ def run_multi_agent(
         "framework": "multi-agent-router",
     }    
 
+def run_parallel_context_agents(
+    *,
+    selected_agents,
+    user,
+    query,
+    conversation_id,
+    top_k,
+    search_type,
+):
+    
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_agent = {}
+
+        # 这句不会直接返回结果，而是返回一个 Future = 任务收据 / 任务句柄
+        # 我把任务交给线程池了，这是取结果用的小票
+        memory_future = executor.submit(
+            run_memory_agent,
+            user=user,
+            conversation_id=conversation_id,
+        )
+        future_to_agent[memory_future] = "memory"
+
+        if "retriever" in selected_agents:
+            retriever_future = executor.submit(
+                run_retriever_agent,
+                user=user,
+                query=query,
+                top_k=top_k,
+                search_type=search_type,
+            )
+            future_to_agent[retriever_future] = "retriever"
+
+        if "workflow" in selected_agents:
+            workflow_future = executor.submit(
+                run_workflow_agent,
+                user=user,
+            )
+            future_to_agent[workflow_future] = "workflow"
+
+        results = {}
+        """
+        tasks = {
+            "memory": Future(...),
+            "retriever": Future(...),
+            "workflow": Future(...),
+        }
+
+        for future in as_completed(tasks.values()): 谁先执行完，就先把谁交出来
+        as_completed(...) 会监听这些 Future，按完成顺序返回。
+        memory      0.1s 完成
+        workflow    0.3s 完成
+        retriever   1.2s 完成
+
+        memory_future
+        workflow_future
+        retriever_future
+        """
+        # tasks.values() 里一开始放的就是 Future 对象，也就是“已经提交出去、未来会完成的任务句柄
+        """
+        外层 for：每完成一个 future，就处理一次
+        内层 next 里的 for：为了找这个 future 对应哪个 agent，再遍历 tasks
+        """
+        
+        for future in as_completed(future_to_agent):
+            # 反查这个完成的 future 对应哪个 agent 名字
+            """
+            next(...) 的作用是：从一个可迭代对象里取第一个结果。
+            
+            等价于
+            for name, task_future in tasks.items():
+                if task_future == future:
+                    agent_name = name
+                    break
+
+            name for name, task_future in tasks.items() 会生成符合条件的 name
+
+            name="memory", task_future=memory_future
+            memory_future == retriever_future ? 否
+
+            name="retriever", task_future=retriever_future
+            retriever_future == retriever_future ? 是
+            生成 "retriever"
+
+            next(...) 拿到第一个生成的值："retriever"
+            """
+            # agent_name = next(
+            #     name for name, task_future in tasks.items()
+            #     if task_future == future
+            # )
+            agent_name = future_to_agent[future]
+            # future.result() 取这个任务的返回值; 如果任务还没完成，就等它完成; 如果任务抛异常，这里会重新抛出来
+            results[agent_name] = future.result()
+
+    return results
     
 
 
