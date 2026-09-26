@@ -1628,6 +1628,7 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("multi_agent_supervisor", step_names)
         self.assertIn("multi_agent_parallel_context_done", step_names)
         self.assertIn("multi_agent_done", step_names)
+        self.assertIn("multi_agent_answer_prompt_build", step_names)
 
         supervisor_step = AiTraceStepLog.objects.get(
             trace_id=trace_id,
@@ -1637,6 +1638,16 @@ class KnowledgeDocumentApiTests(TestCase):
 
         self.assertEqual(supervisor_step.detail["usage"]["total_tokens"], 20)
         self.assertIn("付款审批", supervisor_step.detail["reason"])
+
+        answer_prompt_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_answer_prompt_build",
+        )
+
+        self.assertEqual(answer_prompt_step.detail["router_type"], "supervisor")
+        self.assertIn("workflow", answer_prompt_step.detail["selected_agents"])
+        self.assertTrue(answer_prompt_step.detail["has_workflow"])  
 
         self.assertEqual(mock_call_ai_service.call_count, 2)
 

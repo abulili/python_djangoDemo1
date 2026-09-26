@@ -308,6 +308,7 @@ def run_answer_agent(
     memory_result,
     knowledge_result,
     workflow_result,
+    agent_plan = None,
 ):
     memory_context = "\n".join([
         f"{item.get('role')}: {item.get('content')}"
@@ -325,6 +326,23 @@ def run_answer_agent(
         else "本次问题未调用工作流 Agent"
     )
 
+    """
+    agent_plan = {
+        "router_type": "supervisor",
+        "selected_agents": ["memory", "retriever", "workflow", "answer"],
+        "supervisor_reason": "问题涉及付款审批规则，需要知识库和工作流信息。",
+    }
+    要把字典转成json字符串
+
+    ensure_ascii=False：保留中文
+    indent=2：格式化缩进 2 个空格
+    """
+    agent_plan_context = (
+        json.dumps(agent_plan, ensure_ascii=False, indent=2)
+        if agent_plan
+        else "暂无调度计划"
+    )
+
     prompt = f"""
 你是 AnswerAgent，负责整合多个 Agent 的结果并给出最终业务回答。
 
@@ -340,6 +358,9 @@ def run_answer_agent(
 【WorkflowAgent 工作流结果】
 {workflow_context}
 
+【Agent 调度计划】
+{agent_plan_context}
+
 回答要求：
 1. 优先基于 RetrieverAgent 和 WorkflowAgent 的结果回答。
 2. 不要编造 Agent 没有提供的数据。
@@ -352,6 +373,8 @@ def run_answer_agent(
         model_key=model_key,
         user=user,
     )
+
+    
 
     return {
         "success": success,
@@ -553,6 +576,15 @@ def run_multi_agent(
             },
         )
 
+    agent_plan = {
+        "router_type": router_type,
+        "selected_agents": selected_agents,
+        "key_evaluation": key_result["evaluation"] if key_result else {},
+        "jev_evaluation": jev_result["evaluation"] if jev_result else {},
+        "jev_reason": jev_result["reason"] if jev_result else "",
+        "supervisor_reason": supervisor_result["reason"] if supervisor_result else "",
+    }
+
     answer_result = run_answer_agent(
         user=user,
         query=query,
@@ -563,6 +595,23 @@ def run_multi_agent(
         memory_result=memory_result,
         knowledge_result=knowledge_result,
         workflow_result=workflow_result,
+        agent_plan=agent_plan,
+    )
+
+    AiTraceStepLog.objects.create(
+        user=user,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+        step="multi_agent_answer_prompt_build",
+        query=query,
+        detail={
+            "prompt_length": len(answer_result.get("prompt", "")),
+            "router_type": router_type,
+            "selected_agents": selected_agents,
+            "has_memory": bool(memory_result.get("messages")),
+            "knowledge_hit_count": len(knowledge_result.get("results", [])),
+            "has_workflow": workflow_result is not None,
+        },
     )
 
     if not answer_result["success"]:
