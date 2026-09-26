@@ -1050,6 +1050,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
         conversation_id = request.data.get("conversation_id")
         trace_id = getattr(request, "trace_id", "")
         router_type = request.data.get("router_type", "rule")
+        enabled_agents = request.data.get("enabled_agents")
 
         if not query.strip():
             return error_response("请提供query", code=400)
@@ -1077,6 +1078,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             call_ai_service=call_ai_service,
             router_type=router_type,
             router_model_key=router_model_key,
+            enabled_agents=enabled_agents,
         )
 
         if not result["success"]:
@@ -1099,6 +1101,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "supervisor_usage": result.get("supervisor_usage", {}),
             "usage_summary": result.get("usage_summary", {}),
             "agent_timing": result.get("agent_timing", {}),
+            "enabled_agents": result.get("enabled_agents", []), # 也可以写，但是这样更专业，而且还过滤掉了非法agent
         })
         
 

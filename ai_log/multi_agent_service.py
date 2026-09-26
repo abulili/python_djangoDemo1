@@ -402,6 +402,7 @@ def run_multi_agent(
     call_ai_service,
     router_type="rule",
     router_model_key=None,
+    enabled_agents=None,
 ):
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
@@ -433,6 +434,20 @@ def run_multi_agent(
         selected_agents = supervisor_result["selected_agents"]
     else:
         selected_agents = route_agents(query)
+        
+    if enabled_agents:
+        allowed_agents = set(enabled_agents)
+
+        selected_agents = [
+            agent for agent in selected_agents
+            if agent in allowed_agents or agent == "answer"
+        ]
+
+        if "retriever" not in selected_agents and "workflow" not in selected_agents:
+            selected_agents.insert(0, "retriever")
+
+        if "answer" not in selected_agents:
+            selected_agents.append("answer")
 
     AiTraceStepLog.objects.create(
         user=user,
@@ -446,6 +461,7 @@ def run_multi_agent(
             "top_k": top_k,
             "search_type": search_type,
             "router_type": router_type,
+            "enabled_agents": enabled_agents,
         },
     )
 
@@ -725,6 +741,7 @@ def run_multi_agent(
         "supervisor_usage": supervisor_result.get("usage", {}) if supervisor_result else {},
         "usage_summary": usage_summary,
         "agent_timing": agent_timing,
+        "enabled_agents": enabled_agents,
     }    
 
 def run_parallel_context_agents(
