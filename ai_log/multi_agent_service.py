@@ -1,5 +1,6 @@
 import json
 import uuid
+import time
 
 from ai_log.agent_tools import (
     get_conversation_memory_tool,
@@ -495,7 +496,7 @@ def run_multi_agent(
             },
         )
 
-    context_results = run_parallel_context_agents(
+    parallel_result = run_parallel_context_agents(
         selected_agents=selected_agents,
         user=user,
         query=query,
@@ -503,6 +504,8 @@ def run_multi_agent(
         top_k=top_k,
         search_type=search_type,
     )
+    context_results = parallel_result["results"]
+    agent_timing = parallel_result["timing"]
 
     AiTraceStepLog.objects.create(
         user=user,
@@ -513,6 +516,7 @@ def run_multi_agent(
         detail={
             "parallel_agents": list(context_results.keys()),
             "parallel_agent_count": len(context_results),
+            "timing": agent_timing,
         },
     )
 
@@ -585,6 +589,7 @@ def run_multi_agent(
         "supervisor_reason": supervisor_result["reason"] if supervisor_result else "",
     }
 
+    answer_started_at = time.perf_counter()
     answer_result = run_answer_agent(
         user=user,
         query=query,
@@ -597,6 +602,9 @@ def run_multi_agent(
         workflow_result=workflow_result,
         agent_plan=agent_plan,
     )
+
+    answer_duration = time.perf_counter() - answer_started_at
+    agent_timing["answer"] = round(answer_duration, 4)
 
     AiTraceStepLog.objects.create(
         user=user,
@@ -613,6 +621,29 @@ def run_multi_agent(
             "has_workflow": workflow_result is not None,
         },
     )
+
+    router_usage = {}
+
+    if jev_result:
+        router_usage = jev_result.get("usage", {})
+    elif supervisor_result:
+        router_usage = supervisor_result.get("usage", {})
+
+    answer_usage = {
+        "prompt_tokens": answer_result["result"].get("prompt_tokens", 0),
+        "completion_tokens": answer_result["result"].get("completion_tokens", 0),
+        "total_tokens": answer_result["result"].get("total_tokens", 0),
+        "cost": answer_result["result"].get("cost", 0.0),
+    }
+
+    usage_summary = {
+        "router_tokens": router_usage.get("total_tokens", 0),
+        "answer_tokens": answer_usage.get("total_tokens", 0),
+        "total_tokens": router_usage.get("total_tokens", 0) + answer_usage.get("total_tokens", 0),
+        "router_cost": router_usage.get("cost", 0.0),
+        "answer_cost": answer_usage.get("cost", 0.0),
+        "total_cost": router_usage.get("cost", 0.0) + answer_usage.get("cost", 0.0),
+    }
 
     if not answer_result["success"]:
         AiTraceStepLog.objects.create(
@@ -672,6 +703,7 @@ def run_multi_agent(
             "knowledge_hit_count": len(knowledge_result.get("results", [])),
             "used_workflow_agent": workflow_result is not None,
             "router_type": router_type,
+            "usage_summary": usage_summary,
         },
     )
 
@@ -691,6 +723,8 @@ def run_multi_agent(
         "jev_usage": jev_result.get("usage", {}) if jev_result else {},
         "supervisor_reason": supervisor_result["reason"] if supervisor_result else "",
         "supervisor_usage": supervisor_result.get("usage", {}) if supervisor_result else {},
+        "usage_summary": usage_summary,
+        "agent_timing": agent_timing,
     }    
 
 def run_parallel_context_agents(
@@ -706,6 +740,10 @@ def run_parallel_context_agents(
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_agent = {}
 
+        started_at = time.perf_counter()
+        future_started_at = {}
+        timing = {}
+
         # 这句不会直接返回结果，而是返回一个 Future = 任务收据 / 任务句柄
         # 我把任务交给线程池了，这是取结果用的小票
         memory_future = executor.submit(
@@ -714,6 +752,7 @@ def run_parallel_context_agents(
             conversation_id=conversation_id,
         )
         future_to_agent[memory_future] = "memory"
+        future_started_at[memory_future] = time.perf_counter()
 
         if "retriever" in selected_agents:
             retriever_future = executor.submit(
@@ -724,6 +763,7 @@ def run_parallel_context_agents(
                 search_type=search_type,
             )
             future_to_agent[retriever_future] = "retriever"
+            future_started_at[retriever_future] = time.perf_counter()
 
         if "workflow" in selected_agents:
             workflow_future = executor.submit(
@@ -731,6 +771,7 @@ def run_parallel_context_agents(
                 user=user,
             )
             future_to_agent[workflow_future] = "workflow"
+            future_started_at[workflow_future] = time.perf_counter()
 
         results = {}
         """
@@ -785,8 +826,14 @@ def run_parallel_context_agents(
             agent_name = future_to_agent[future]
             # future.result() 取这个任务的返回值; 如果任务还没完成，就等它完成; 如果任务抛异常，这里会重新抛出来
             results[agent_name] = future.result()
+            timing[agent_name] = round(time.perf_counter() - future_started_at[future], 4)
 
-    return results
+    timing["parallel_total"] = round(time.perf_counter() - started_at, 4)
+
+    return {
+        "results": results,
+        "timing": timing,
+    }
     
 
 

@@ -1368,6 +1368,17 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("memory", parallel_step.detail["parallel_agents"])
         self.assertIn("retriever", parallel_step.detail["parallel_agents"])
         self.assertIn("workflow", parallel_step.detail["parallel_agents"])
+        
+        self.assertIn("timing", parallel_step.detail)
+        self.assertIn("parallel_total", parallel_step.detail["timing"])
+
+        self.assertEqual(data["usage_summary"]["router_tokens"], 0)
+        self.assertEqual(data["usage_summary"]["answer_tokens"], 30)
+        self.assertEqual(data["usage_summary"]["total_tokens"], 30)
+
+        self.assertIn("agent_timing", data)
+        self.assertIn("answer", data["agent_timing"])
+        self.assertIn("parallel_total", data["agent_timing"])
 
         mock_call_ai_service.assert_called_once()
 
@@ -1545,6 +1556,10 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertEqual(jev_step.detail["usage"]["total_tokens"], 120)
         self.assertEqual(jev_step.detail["usage"]["model"], "jev-latest")
 
+        self.assertEqual(data["usage_summary"]["router_tokens"], 120)
+        self.assertEqual(data["usage_summary"]["answer_tokens"], 30)
+        self.assertEqual(data["usage_summary"]["total_tokens"], 150)
+
         mock_call_jev_service.assert_called_once()
         mock_call_ai_service.assert_called_once()
 
@@ -1647,9 +1662,253 @@ class KnowledgeDocumentApiTests(TestCase):
 
         self.assertEqual(answer_prompt_step.detail["router_type"], "supervisor")
         self.assertIn("workflow", answer_prompt_step.detail["selected_agents"])
-        self.assertTrue(answer_prompt_step.detail["has_workflow"])  
+        self.assertTrue(answer_prompt_step.detail["has_workflow"]) 
+
+        self.assertEqual(data["usage_summary"]["router_tokens"], 20)
+        self.assertEqual(data["usage_summary"]["answer_tokens"], 30)
+        self.assertEqual(data["usage_summary"]["total_tokens"], 50)
 
         self.assertEqual(mock_call_ai_service.call_count, 2)
+
+    @patch("ai_log.views.call_ai_service")
+    def test_multi_agent_ask_fallback_when_supervisor_returns_invalid_json(self, mock_call_ai_service):
+        """
+        1. 用户请求 router_type=supervisor
+
+        2. run_multi_agent 进入 supervisor 分支
+
+        3. run_supervisor_agent 调用 call_ai_service
+        -> 拿到 side_effect[0]
+        -> reply = "我觉得应该查知识库和工作流，但我没有返回 JSON"
+
+        4. run_supervisor_agent 尝试 json.loads(raw)
+        -> 失败，因为这不是 JSON
+        -> 返回：
+            success=False
+            selected_agents=route_agents(query)
+            reason="Supervisor 返回非 JSON，使用规则路由"
+            raw="我觉得应该查知识库和工作流，但我没有返回 JSON"
+
+        5. run_multi_agent 用 fallback 后的 selected_agents 继续跑
+        -> memory/retriever/workflow 等
+
+        6. run_answer_agent 调用 call_ai_service
+        -> 这是第二次调用
+        -> 拿到 side_effect[1]
+        -> reply = "Supervisor fallback 后仍然完成回答。"
+
+        7. 接口最终 response.data["data"]["answer"]
+        就是第二次模型调用的 reply：
+        "Supervisor fallback 后仍然完成回答。"
+        """
+        
+        mock_call_ai_service.side_effect = [
+            ({
+                "reply": "我觉得应该查知识库和工作流，但我没有返回 JSON",
+                "prompt_tokens": 12,
+                "completion_tokens": 8,
+                "total_tokens": 20,
+                "cost": 0.0002,
+                "duration": 0.1,
+            }, True),
+            ({
+                "reply": "Supervisor fallback 后仍然完成回答。",
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+                "cost": 0.001,
+                "duration": 0.2,
+            }, True),
+        ]
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要走审批流程。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="付款申请超过 5000 元需要走审批流程。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        response = self.client.post("/api/knowledge-documents/multi-agent-ask/", {
+            "query": "根据付款审批规则，这笔付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "multi-agent-supervisor-invalid-json",
+            "router_type": "supervisor",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["router_type"], "supervisor")
+        self.assertEqual(data["answer"], "Supervisor fallback 后仍然完成回答。")
+        self.assertIn("retriever", data["agents"])
+        self.assertIn("answer", data["agents"])
+
+        trace_id = response.headers.get("X-Trace-Id")
+        self.assertTrue(trace_id)
+
+        supervisor_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_supervisor",
+        )
+
+        self.assertFalse(supervisor_step.detail["success"])
+        self.assertIn("非 JSON", supervisor_step.detail["reason"])
+
+        answer_prompt_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_answer_prompt_build",
+        )
+
+        self.assertEqual(answer_prompt_step.detail["router_type"], "supervisor")
+        self.assertIn("retriever", answer_prompt_step.detail["selected_agents"])
+
+        self.assertEqual(mock_call_ai_service.call_count, 2)
+
+    @patch("ai_log.multi_agent_service.call_jev_service")
+    @patch("ai_log.views.call_ai_service")
+    def test_multi_agent_ask_fallback_when_jev_router_fails(self, mock_call_ai_service, mock_call_jev_service):
+        """
+        JEV 调用失败
+        -> fallback 到 rule router
+        -> 接口仍然 200
+        -> trace 有 multi_agent_jev_router
+        -> detail.success = False
+        -> 最终 AnswerAgent 仍然回答
+        """
+        mock_call_jev_service.return_value = ({
+            "reply": "JEV 调用失败：timeout",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0,
+        }, False)
+
+        mock_call_ai_service.return_value = ({
+            "reply": "JEV fallback 后仍然完成回答。",
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 0.2,
+        }, True)
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要走审批流程。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="付款申请超过 5000 元需要走审批流程。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        response = self.client.post("/api/knowledge-documents/multi-agent-ask/", {
+            "query": "根据付款审批规则，这笔付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "multi-agent-jev-fallback",
+            "router_type": "jev",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["router_type"], "jev")
+        self.assertEqual(data["answer"], "JEV fallback 后仍然完成回答。")
+        self.assertIn("retriever", data["agents"])
+        self.assertIn("answer", data["agents"])
+
+        trace_id = response.headers.get("X-Trace-Id")
+        self.assertTrue(trace_id)
+
+        jev_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_jev_router",
+        )
+
+        self.assertFalse(jev_step.detail["success"])
+        self.assertIn("JEV 调用失败", jev_step.detail["reason"])
+
+        answer_prompt_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_answer_prompt_build",
+        )
+
+        self.assertEqual(answer_prompt_step.detail["router_type"], "jev")
+        self.assertIn("retriever", answer_prompt_step.detail["selected_agents"])
+
+        mock_call_jev_service.assert_called_once()
+        mock_call_ai_service.assert_called_once()
+
+    @patch("ai_log.views.call_ai_service")
+    def test_multi_agent_ask_records_failure_when_answer_agent_fails(self, mock_call_ai_service):
+        mock_call_ai_service.return_value = ({
+            "reply": "AnswerAgent 调用失败：timeout",
+            "prompt_tokens": 20,
+            "completion_tokens": 0,
+            "total_tokens": 20,
+            "cost": 0.001,
+            "duration": 0.2,
+        }, False)
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要走审批流程。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="付款申请超过 5000 元需要走审批流程。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        response = self.client.post("/api/knowledge-documents/multi-agent-ask/", {
+            "query": "根据付款审批规则，这笔付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "multi-agent-answer-failed",
+            "router_type": "rule",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("AnswerAgent 调用失败", response.data["message"])
+
+        trace_id = response.headers.get("X-Trace-Id")
+        self.assertTrue(trace_id)
+
+        failed_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_failed",
+        )
+
+        self.assertFalse(failed_step.success)
+        self.assertIn("AnswerAgent 调用失败", failed_step.error_message)
+        self.assertIn("retriever", failed_step.detail["selected_agents"])
+
+        answer_prompt_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_answer_prompt_build",
+        )
+
+        self.assertEqual(answer_prompt_step.detail["router_type"], "rule")
+        self.assertIn("retriever", answer_prompt_step.detail["selected_agents"])
+
+        mock_call_ai_service.assert_called_once()
 
 
 class AICallLogApiTests(TestCase):

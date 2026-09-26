@@ -1097,6 +1097,8 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "jev_usage": result.get("jev_usage", {}),
             "supervisor_reason": result.get("supervisor_reason", ""),
             "supervisor_usage": result.get("supervisor_usage", {}),
+            "usage_summary": result.get("usage_summary", {}),
+            "agent_timing": result.get("agent_timing", {}),
         })
         
 
