@@ -635,6 +635,7 @@ def run_multi_agent(
             "has_memory": bool(memory_result.get("messages")),
             "knowledge_hit_count": len(knowledge_result.get("results", [])),
             "has_workflow": workflow_result is not None,
+            "agent_plan": agent_plan,
         },
     )
 
@@ -672,6 +673,7 @@ def run_multi_agent(
             error_message=answer_result["answer"],
             detail={
                 "selected_agents": selected_agents,
+                "agent_plan": agent_plan,
             },
         )
 
@@ -681,6 +683,7 @@ def run_multi_agent(
             "conversation_id": conversation_id,
             "agents": selected_agents,
             "references": knowledge_result.get("results", []),
+            "agent_plan": agent_plan,
         }
 
     answer = answer_result["answer"]
@@ -720,6 +723,7 @@ def run_multi_agent(
             "used_workflow_agent": workflow_result is not None,
             "router_type": router_type,
             "usage_summary": usage_summary,
+            "agent_plan": agent_plan,
         },
     )
 
@@ -742,6 +746,7 @@ def run_multi_agent(
         "usage_summary": usage_summary,
         "agent_timing": agent_timing,
         "enabled_agents": enabled_agents,
+        "agent_plan": agent_plan,
     }    
 
 def run_parallel_context_agents(

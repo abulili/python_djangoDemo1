@@ -1663,10 +1663,25 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertEqual(answer_prompt_step.detail["router_type"], "supervisor")
         self.assertIn("workflow", answer_prompt_step.detail["selected_agents"])
         self.assertTrue(answer_prompt_step.detail["has_workflow"]) 
+        self.assertEqual(answer_prompt_step.detail["agent_plan"]["router_type"], "supervisor")
+        self.assertIn("workflow", answer_prompt_step.detail["agent_plan"]["selected_agents"])
 
         self.assertEqual(data["usage_summary"]["router_tokens"], 20)
         self.assertEqual(data["usage_summary"]["answer_tokens"], 30)
         self.assertEqual(data["usage_summary"]["total_tokens"], 50)
+
+        self.assertEqual(data["agent_plan"]["router_type"], "supervisor")
+        self.assertIn("workflow", data["agent_plan"]["selected_agents"])
+        self.assertIn("付款审批", data["agent_plan"]["supervisor_reason"])
+
+        done_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_done",
+        )
+
+        self.assertEqual(done_step.detail["agent_plan"]["router_type"], "supervisor")
+        self.assertIn("workflow", done_step.detail["agent_plan"]["selected_agents"])
 
         self.assertEqual(mock_call_ai_service.call_count, 2)
 
