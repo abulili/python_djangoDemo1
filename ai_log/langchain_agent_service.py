@@ -202,68 +202,68 @@ def run_langchain_style_agent(
     workflow_result = None
     langchain_timing = {}
 
-    for tool in tools:
-        if tool.name == "workflow_summary" and not should_use_workflow_tool(query):
-            continue
+    # for tool in tools:
+    #     if tool.name == "workflow_summary" and not should_use_workflow_tool(query):
+    #         continue
 
-        output = tool.run(
-            user = user,
-            query = query,
-            conversation_id = conversation_id,
-            top_k = top_k,
-            search_type = search_type,
-        )
+    #     output = tool.run(
+    #         user = user,
+    #         query = query,
+    #         conversation_id = conversation_id,
+    #         top_k = top_k,
+    #         search_type = search_type,
+    #     )
 
-        tool_outputs.append({
-            "tool": tool.name,
-            "description": tool.description,
-            "output": output,
-        })
+    #     tool_outputs.append({
+    #         "tool": tool.name,
+    #         "description": tool.description,
+    #         "output": output,
+    #     })
 
-        if tool.name == "conversation_memory":
-            memory_result = output
-            AiTraceStepLog.objects.create(
-                user=user,
-                trace_id=trace_id,
-                conversation_id=conversation_id,
-                step="langchain_tool_memory",
-                query=query,
-                detail={
-                    "message_count": output["message_count"],
-                    "returned_count": len(output["messages"]),
-                },
-            )
+    #     if tool.name == "conversation_memory":
+    #         memory_result = output
+    #         AiTraceStepLog.objects.create(
+    #             user=user,
+    #             trace_id=trace_id,
+    #             conversation_id=conversation_id,
+    #             step="langchain_tool_memory",
+    #             query=query,
+    #             detail={
+    #                 "message_count": output["message_count"],
+    #                 "returned_count": len(output["messages"]),
+    #             },
+    #         )
 
-        if tool.name == "knowledge_retriever":
-            knowledge_result = output
-            AiTraceStepLog.objects.create(
-                user=user,
-                trace_id=trace_id,
-                conversation_id=conversation_id,
-                step="langchain_tool_retriever",
-                query=query,
-                detail={
-                    "search_type": output["search_type"],
-                    "top_k": output["top_k"],
-                    "hit_count": len(output["results"]),
-                    "chunk_ids": [item["id"] for item in output["results"]],
-                },
-            )
+    #     if tool.name == "knowledge_retriever":
+    #         knowledge_result = output
+    #         AiTraceStepLog.objects.create(
+    #             user=user,
+    #             trace_id=trace_id,
+    #             conversation_id=conversation_id,
+    #             step="langchain_tool_retriever",
+    #             query=query,
+    #             detail={
+    #                 "search_type": output["search_type"],
+    #                 "top_k": output["top_k"],
+    #                 "hit_count": len(output["results"]),
+    #                 "chunk_ids": [item["id"] for item in output["results"]],
+    #             },
+    #         )
 
-        if tool.name == "workflow_summary":
-            workflow_result = output
-            AiTraceStepLog.objects.create(
-                user=user,
-                trace_id=trace_id,
-                conversation_id=conversation_id,
-                step="langchain_tool_workflow",
-                query=query,
-                detail={
-                    "my_request_count": output["my_request_count"],
-                    "pending_approval_count": output["pending_approval_count"],
-                    "recent_request_count": len(output["recent_requests"]),
-                },
-            )
+    #     if tool.name == "workflow_summary":
+    #         workflow_result = output
+    #         AiTraceStepLog.objects.create(
+    #             user=user,
+    #             trace_id=trace_id,
+    #             conversation_id=conversation_id,
+    #             step="langchain_tool_workflow",
+    #             query=query,
+    #             detail={
+    #                 "my_request_count": output["my_request_count"],
+    #                 "pending_approval_count": output["pending_approval_count"],
+    #                 "recent_request_count": len(output["recent_requests"]),
+    #             },
+    #         )
 
     memory_result = memory_result or {
         "tool": "conversation_memory",

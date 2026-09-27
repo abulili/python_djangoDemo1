@@ -1104,6 +1104,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "agent_timing": result.get("agent_timing", {}),
             "enabled_agents": result.get("enabled_agents", []), # 也可以写，但是这样更专业，而且还过滤掉了非法agent
             "agent_plan": result.get("agent_plan", {}),
+            "agent_failures": result.get("agent_failures", {}),
         })
         
 

@@ -1,7 +1,8 @@
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 
 # Create your tests here. 写自动化测试 自动模拟请求、检查结果
 # python manage.py test ai_log
+# 可以加-k过滤测试名字，比如只运行测试名里包含 multi_agent 的测试：python manage.py test ai_log.tests.KnowledgeDocumentApiTests -k multi_agent
 
 from django.contrib.auth.models import User
 from rest_framework.test import APIClient
@@ -78,8 +79,26 @@ class RegServiceTests(TestCase):
             completion_tokens=1000,
         )
         self.assertEqual(cost, 0.00)
+"""
+TestCase:
+    每个测试包在事务里，不提交。
+    新线程/新连接看不到主线程创建的数据。
 
-class KnowledgeDocumentApiTests(TestCase):
+TransactionTestCase:
+    数据真正写入测试库。
+    RunnableParallel 线程里的新连接可以看到。
+"""
+# 测试缓存失败临时处理方式
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "ai-log-test-cache",
+        }
+    }
+)
+class KnowledgeDocumentApiTests(TransactionTestCase):
+    reset_sequences = True
     def setUp(self):
         cache.clear()
         
@@ -1039,7 +1058,7 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
 
         data = response.data["data"]
-        self.assertEqual(data["framework"], "langchain-core-runnable-sequence")
+        self.assertEqual(data["framework"], "langchain-core-runnable-parallel-sequence")
         self.assertTrue(data["using_langchain_core"])
         self.assertEqual(data["answer"], "LangChain Agent 判断这笔付款申请需要审批。")
         self.assertEqual(data["conversation_id"], "langchain-agent-conversation")
@@ -1073,9 +1092,9 @@ class KnowledgeDocumentApiTests(TestCase):
         )
 
         self.assertIn("langchain_agent_start", step_names)
-        self.assertIn("langchain_tool_memory", step_names)
-        self.assertIn("langchain_tool_retriever", step_names)
-        self.assertIn("langchain_tool_workflow", step_names)
+        # self.assertIn("langchain_tool_memory", step_names)
+        # self.assertIn("langchain_tool_retriever", step_names)
+        # self.assertIn("langchain_tool_workflow", step_names)
         self.assertIn("langchain_parallel_context_done", step_names)
         self.assertIn("langchain_prompt_build", step_names)
         self.assertIn("langchain_agent_done", step_names)
@@ -1356,20 +1375,20 @@ class KnowledgeDocumentApiTests(TestCase):
         )
 
         self.assertIn("multi_agent_start", step_names)
-        self.assertIn("multi_agent_memory", step_names)
-        self.assertIn("multi_agent_retriever", step_names)
-        self.assertIn("multi_agent_workflow", step_names)
-        self.assertIn("multi_agent_done", step_names)
         self.assertIn("multi_agent_parallel_context_done", step_names)
+        self.assertIn("multi_agent_done", step_names)
+        self.assertIn("multi_agent_answer_prompt_build", step_names)
 
         parallel_step = AiTraceStepLog.objects.get(
             trace_id=trace_id,
             user=self.user,
             step="multi_agent_parallel_context_done",
         )
-        self.assertIn("conversation_memory", parallel_step.detail["parallel_tools"])
-        self.assertIn("knowledge_retriever", parallel_step.detail["parallel_tools"])
-        self.assertIn("workflow_summary", parallel_step.detail["parallel_tools"])
+        self.assertIn("memory", parallel_step.detail["parallel_agents"])
+        self.assertIn("retriever", parallel_step.detail["parallel_agents"])
+        self.assertIn("workflow", parallel_step.detail["parallel_agents"])
+        self.assertFalse(parallel_step.detail["has_failures"])
+        self.assertEqual(parallel_step.detail["failures"], {})
         self.assertIn("parallel_total", parallel_step.detail["timing"])
 
         self.assertIn("memory", parallel_step.detail["parallel_agents"])
@@ -1377,7 +1396,6 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("workflow", parallel_step.detail["parallel_agents"])
         
         self.assertIn("timing", parallel_step.detail)
-        self.assertIn("parallel_total", parallel_step.detail["timing"])
 
         self.assertEqual(data["usage_summary"]["router_tokens"], 0)
         self.assertEqual(data["usage_summary"]["answer_tokens"], 30)
@@ -1387,6 +1405,76 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("answer", data["agent_timing"])
         self.assertIn("parallel_total", data["agent_timing"])
 
+        mock_call_ai_service.assert_called_once()
+
+    @patch("ai_log.multi_agent_service.run_workflow_agent")
+    @patch("ai_log.views.call_ai_service")
+    def test_multi_agent_ask_degrades_when_workflow_agent_fails(
+        self,
+        mock_call_ai_service,
+        mock_run_workflow_agent,
+    ):
+        mock_run_workflow_agent.side_effect = Exception("workflow timeout")
+
+        mock_call_ai_service.return_value = ({
+            "reply": "WorkflowAgent 失败后仍然完成回答。",
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "total_tokens": 30,
+            "cost": 0.001,
+            "duration": 0.2,
+        }, True)
+
+        document = KnowledgeDocument.objects.create(
+            user=self.user,
+            title="付款审批规则",
+            content="付款申请超过 5000 元需要走审批流程。",
+        )
+        KnowledgeChunk.objects.create(
+            document=document,
+            chunk_index=0,
+            content="付款申请超过 5000 元需要走审批流程。",
+            embedding=[0.1, 0.2, 0.3],
+        )
+
+        response = self.client.post("/api/knowledge-documents/multi-agent-ask/", {
+            "query": "根据付款审批规则，这笔付款申请要不要审批？",
+            "top_k": 3,
+            "search_type": "hybrid",
+            "conversation_id": "multi-agent-workflow-degrade",
+            "router_type": "rule",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data["data"]
+        self.assertEqual(data["answer"], "WorkflowAgent 失败后仍然完成回答。")
+        self.assertIn("workflow", data["agents"])
+        self.assertIn("workflow", data["agent_failures"])
+        self.assertIn("workflow timeout", data["agent_failures"]["workflow"])
+        self.assertGreaterEqual(len(data["references"]), 1)
+
+        trace_id = response.headers.get("X-Trace-Id")
+        self.assertTrue(trace_id)
+
+        parallel_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_parallel_context_done",
+        )
+        self.assertTrue(parallel_step.detail["has_failures"])
+        self.assertIn("workflow", parallel_step.detail["failures"])
+        self.assertIn("workflow timeout", parallel_step.detail["failures"]["workflow"])
+
+        answer_prompt_step = AiTraceStepLog.objects.get(
+            trace_id=trace_id,
+            user=self.user,
+            step="multi_agent_answer_prompt_build",
+        )
+        self.assertFalse(answer_prompt_step.detail["has_workflow"])
+        self.assertIn("workflow", answer_prompt_step.detail["agent_plan"]["agent_failures"])
+
+        mock_run_workflow_agent.assert_called_once()
         mock_call_ai_service.assert_called_once()
 
     @patch("ai_log.views.call_ai_service")

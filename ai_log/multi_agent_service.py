@@ -522,6 +522,10 @@ def run_multi_agent(
     )
     context_results = parallel_result["results"]
     agent_timing = parallel_result["timing"]
+    agent_failures = parallel_result.get("failures", {})
+
+    def is_failed_agent_result(result):
+        return isinstance(result, dict) and result.get("success") is False
 
     AiTraceStepLog.objects.create(
         user=user,
@@ -533,14 +537,20 @@ def run_multi_agent(
             "parallel_agents": list(context_results.keys()),
             "parallel_agent_count": len(context_results),
             "timing": agent_timing,
+            "failures": agent_failures,
+            "has_failures": bool(agent_failures),
         },
     )
 
-    memory_result = context_results.get("memory") or {
-        "tool": "conversation_memory",
-        "message_count": 0,
-        "messages": [],
-    }
+    memory_result = context_results.get("memory") 
+
+    if not memory_result or is_failed_agent_result(memory_result):
+        memory_result = {
+            "tool": "conversation_memory",
+            "message_count": 0,
+            "messages": [],
+            "error": memory_result.get("error") if isinstance(memory_result, dict) else "",
+        }
 
     AiTraceStepLog.objects.create(
         user=user,
@@ -554,12 +564,15 @@ def run_multi_agent(
         },
     )
 
-    knowledge_result = context_results.get("retriever") or {
-        "tool": "retrieve_knowledge",
-        "results": [],
-        "search_type": search_type,
-        "top_k": top_k,
-    }
+    knowledge_result = context_results.get("retriever") 
+    if not knowledge_result or is_failed_agent_result(knowledge_result):
+        knowledge_result = {
+            "tool": "retrieve_knowledge",
+            "results": [],
+            "search_type": search_type,
+            "top_k": top_k,
+            "error": knowledge_result.get("error") if isinstance(knowledge_result, dict) else "",
+        }
 
     if "retriever" in selected_agents:
         # knowledge_result = run_retriever_agent(
@@ -582,6 +595,8 @@ def run_multi_agent(
         )
 
     workflow_result = context_results.get("workflow") or None
+    if workflow_result and is_failed_agent_result(workflow_result):
+        workflow_result = None
 
     if workflow_result:
         AiTraceStepLog.objects.create(
@@ -603,6 +618,7 @@ def run_multi_agent(
         "jev_evaluation": jev_result["evaluation"] if jev_result else {},
         "jev_reason": jev_result["reason"] if jev_result else "",
         "supervisor_reason": supervisor_result["reason"] if supervisor_result else "",
+        "agent_failures": agent_failures,
     }
 
     answer_started_at = time.perf_counter()
@@ -747,6 +763,7 @@ def run_multi_agent(
         "agent_timing": agent_timing,
         "enabled_agents": enabled_agents,
         "agent_plan": agent_plan,
+        "agent_failures": agent_failures,
     }    
 
 def run_parallel_context_agents(
@@ -796,6 +813,8 @@ def run_parallel_context_agents(
             future_started_at[workflow_future] = time.perf_counter()
 
         results = {}
+        timing = {}
+        failures = {}
         """
         tasks = {
             "memory": Future(...),
@@ -847,7 +866,18 @@ def run_parallel_context_agents(
             # )
             agent_name = future_to_agent[future]
             # future.result() 取这个任务的返回值; 如果任务还没完成，就等它完成; 如果任务抛异常，这里会重新抛出来
-            results[agent_name] = future.result()
+
+            # 避免Agent异常走不到AnswerAgent
+            try:
+                results[agent_name] = future.result()
+            except Exception as exc:
+                failures[agent_name] = str(exc)
+                results[agent_name] = {
+                    "tool": agent_name,
+                    "success": False,
+                    "error": str(exc),
+                }
+
             timing[agent_name] = round(time.perf_counter() - future_started_at[future], 4)
 
     timing["parallel_total"] = round(time.perf_counter() - started_at, 4)
@@ -855,6 +885,7 @@ def run_parallel_context_agents(
     return {
         "results": results,
         "timing": timing,
+        "failures": failures,
     }
     
 
