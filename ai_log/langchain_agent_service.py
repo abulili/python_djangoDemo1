@@ -1,5 +1,6 @@
 import json
 import uuid
+import time
 
 from ai_log.agent_tools import (
     get_conversation_memory_tool,
@@ -13,11 +14,13 @@ from ai_log.services import save_conversation_messages_to_db, get_prompt
 try:
     from langchain_core.tools import Tool as LangChainTool
     from langchain_core.prompts import ChatPromptTemplate
-    from langchain_core.runnables import RunnableLambda
+    from langchain_core.runnables import RunnableLambda, RunnableParallel, RunnablePassthrough
 except ImportError:
     LangChainTool = None
     ChatPromptTemplate = None
     RunnableLambda = None
+    RunnableParallel = None
+    RunnablePassthrough = None
 
 class LangChainStyleTool:
     """
@@ -120,7 +123,7 @@ def format_agent_response(chain_output):
         "prompt": chain_output["prompt"],
         "result": chain_output["result"],
         "success": chain_output["success"],
-        "framework": "langchain-core-runnable-sequence",
+        "framework": "langchain-core-runnable-parallel-sequence",
     }
 
 # chain = (
@@ -160,7 +163,12 @@ def run_langchain_style_agent(
     tools = build_langchain_style_tools()
     langchain_tools = build_optional_langchain_tools(tools)
     # 是否ChatPromptTemplate和RunnableLambda
-    using_langchain_core = ChatPromptTemplate is not None and RunnableLambda is not None
+    using_langchain_core = (
+        ChatPromptTemplate is not None
+        and RunnableLambda is not None
+        and RunnableParallel is not None
+        and RunnablePassthrough is not None
+    )
     
     if not using_langchain_core:
         return {
@@ -179,7 +187,7 @@ def run_langchain_style_agent(
         step="langchain_agent_start",
         query=query,
         detail={
-            "framework": "langchain-core-runnable-sequence",
+            "framework": "langchain-core-runnable-parallel-sequence",
             "using_langchain_core": using_langchain_core,
             "top_k": top_k,
             "search_type": search_type,
@@ -192,6 +200,7 @@ def run_langchain_style_agent(
     memory_result = None
     knowledge_result = None
     workflow_result = None
+    langchain_timing = {}
 
     for tool in tools:
         if tool.name == "workflow_summary" and not should_use_workflow_tool(query):
@@ -317,7 +326,7 @@ def run_langchain_style_agent(
                 "tools": tool_outputs,
                 "references": knowledge_result.get("results", []),
                 "using_langchain_core": using_langchain_core,
-                "framework": "langchain-core-runnable-sequence",
+                "framework": "langchain-core-runnable-parallel-sequence",
             }   
         # 传了template_name，但数据库里找不到
         if not rendered_prompt:
@@ -329,7 +338,7 @@ def run_langchain_style_agent(
                 "tools": tool_outputs,
                 "references": knowledge_result.get("results", []),
                 "using_langchain_core": using_langchain_core,
-                "framework": "langchain-core-runnable-sequence",
+                "framework": "langchain-core-runnable-parallel-sequence",
             }
         business_prompt = rendered_prompt
         business_template_used = True
@@ -346,6 +355,165 @@ def run_langchain_style_agent(
             "business_prompt_length": len(business_prompt or ""),
         },
     )
+    # Runnable的工具函数
+    tool_by_name = {tool.name: tool for tool in tools}
+
+    def run_memory_context(input_data):
+        # 查会话记忆
+        started_at = time.perf_counter()
+
+        output = tool_by_name["conversation_memory"].run(
+            user=input_data["user"],
+            query=input_data["query"],
+            conversation_id=input_data.get("conversation_id"),
+            top_k=input_data.get("top_k", 3),
+            search_type=input_data.get("search_type", "hybrid"),
+        )
+
+
+        return {
+            "output": output,
+            "duration": round(time.perf_counter() - started_at, 4),
+        }
+
+    def run_retriever_context(input_data):
+        # 查知识库
+        started_at = time.perf_counter()
+
+        output = tool_by_name["knowledge_retriever"].run(
+            user=input_data["user"],
+            query=input_data["query"],
+            conversation_id=input_data.get("conversation_id"),
+            top_k=input_data.get("top_k", 3),
+            search_type=input_data.get("search_type", "hybrid"),
+        )
+
+        return {
+            "output": output,
+            "duration": round(time.perf_counter() - started_at, 4),
+        }
+
+    def run_workflow_context(input_data):
+        # 查业务-工作流
+        if not should_use_workflow_tool(input_data["query"]):
+            return {
+                "output": None,
+                "duration": 0,
+                "skipped": True, # 因为它可能根据问题内容跳过。
+            }
+
+        started_at = time.perf_counter()
+
+        output = tool_by_name["workflow_summary"].run(
+            user=input_data["user"],
+            query=input_data["query"],
+            conversation_id=input_data.get("conversation_id"),
+            top_k=input_data.get("top_k", 3),
+            search_type=input_data.get("search_type", "hybrid"),
+        )
+
+        return {
+            "output": output,
+            "duration": round(time.perf_counter() - started_at, 4),
+            # 如果问题不需要工作流就跳过
+            "skipped": False,
+        }
+
+    def build_prompt_input(parallel_output):
+        # 整理ChatPromptTemplate 需要的变量
+        nonlocal tool_outputs
+        nonlocal memory_result
+        nonlocal knowledge_result
+        nonlocal workflow_result
+        nonlocal memory_context
+        nonlocal knowledge_context
+        nonlocal workflow_context
+        nonlocal tool_plan
+        nonlocal langchain_timing
+
+        input_data = parallel_output["input"]
+        memory_payload = parallel_output["memory"]
+        retriever_payload = parallel_output["retriever"]
+        workflow_payload = parallel_output["workflow"]
+
+        memory_result = memory_payload["output"]
+        knowledge_result = retriever_payload["output"]
+        workflow_result = workflow_payload.get("output")
+
+        langchain_timing = {
+            "memory": memory_payload.get("duration", 0),
+            "retriever": retriever_payload.get("duration", 0),
+            "workflow": workflow_payload.get("duration", 0),
+            "parallel_total": round(time.perf_counter() - input_data["parallel_started_at"], 4),
+        }
+
+        tool_outputs = [
+            {
+                "tool": "conversation_memory",
+                "description": tool_by_name["conversation_memory"].description,
+                "output": memory_result,
+            },
+            {
+                "tool": "knowledge_retriever",
+                "description": tool_by_name["knowledge_retriever"].description,
+                "output": knowledge_result,
+            },
+        ]
+
+        if workflow_result:
+            tool_outputs.append({
+                "tool": "workflow_summary",
+                "description": tool_by_name["workflow_summary"].description,
+                "output": workflow_result,
+            })
+
+        memory_context = "\n".join([
+            f"{item.get('role')}: {item.get('content')}"
+            for item in memory_result.get("messages", [])
+        ])
+
+        knowledge_context = "\n\n".join([
+            f"资料{index + 1}：{item['content']}"
+            for index, item in enumerate(knowledge_result.get("results", []))
+        ])
+
+        workflow_context = (
+            json.dumps(workflow_result, ensure_ascii=False)
+            if workflow_result
+            else "本次问题未调用工作流工具"
+        )
+
+        tool_plan = [
+            {
+                "name": item["tool"],
+                "description": item["description"],
+            }
+            for item in tool_outputs
+        ]
+
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            step="langchain_parallel_context_done",
+            query=query,
+            detail={
+                "parallel_tools": [item["tool"] for item in tool_outputs],
+                "parallel_tool_count": len(tool_outputs),
+                "timing": langchain_timing,
+                "workflow_skipped": workflow_payload.get("skipped", False),
+            },
+        )
+
+        return load_agent_context({
+            "query": input_data["query"],
+            "tool_plan": tool_plan,
+            "memory_context": memory_context,
+            "knowledge_context": knowledge_context,
+            "workflow_context": workflow_context,
+            "business_prompt": input_data["business_prompt"],
+        })
+
 
     prompt_template = ChatPromptTemplate.from_messages([
     (
@@ -422,8 +590,33 @@ def run_langchain_style_agent(
 
     chain_output = call_existing_ai(prompt_value)
     """
+    # chain = (
+    #     RunnableLambda(load_agent_context)
+    #     | prompt_template
+    #     | RunnableLambda(call_existing_ai)
+    #     | RunnableLambda(format_agent_response)
+    # )
+    """
+    chain_input
+    -> RunnableParallel 同时跑：
+    - input 原样保留
+    - memory 查会话记忆
+    - retriever 查知识库
+    - workflow 查业务流程
+    -> build_prompt_input 整理三个结果
+    -> prompt_template 拼 Prompt
+    -> call_existing_ai 调模型
+    -> format_agent_response 格式化
+    """
     chain = (
-        RunnableLambda(load_agent_context)
+        # 输出不再是chain_input了，而是一个这样的新字典
+        RunnableParallel({
+            "input": RunnablePassthrough(), # 把原始 chain_input 原样保留一份，把传进 RunnableParallel 的原始输入，原封不动放到 output["input"] 里
+            "memory": RunnableLambda(run_memory_context), # memory工具结果,
+            "retriever": RunnableLambda(run_retriever_context),
+            "workflow": RunnableLambda(run_workflow_context),
+        })
+        | RunnableLambda(build_prompt_input)
         | prompt_template
         | RunnableLambda(call_existing_ai)
         | RunnableLambda(format_agent_response)
@@ -431,13 +624,22 @@ def run_langchain_style_agent(
 
     # 已经在load_agent_context处理过了
     chain_input = {
+        # "query": query,
+        # "tool_plan": tool_plan,
+        # "memory_context": memory_context,
+        # "knowledge_context": knowledge_context,
+        # "workflow_context": workflow_context,
+        # "business_prompt": business_prompt,
+        "user": user,
         "query": query,
-        "tool_plan": tool_plan,
-        "memory_context": memory_context,
-        "knowledge_context": knowledge_context,
-        "workflow_context": workflow_context,
+        "conversation_id": conversation_id,
+        "top_k": top_k,
+        "search_type": search_type,
         "business_prompt": business_prompt,
+        "parallel_started_at": time.perf_counter(),
     }
+    
+
     """
     把 chain_input 交给 chain
     然后按 chain 里定义的顺序一段一段执行
@@ -469,11 +671,11 @@ def run_langchain_style_agent(
             "knowledge_hit_count": len(knowledge_result.get("results", [])),
             "memory_message_count": memory_result.get("message_count", 0),
             "used_workflow": workflow_result is not None,
-            #"chain_type": "ChatPromptTemplate|RunnableLambda",
-            "chain_type": "RunnableLambda|prompt_template|RunnableLambda|RunnableLambda",
-            "framework": "langchain-core-runnable-sequence",
+            "chain_type": "RunnableParallel|RunnableLambda|ChatPromptTemplate|RunnableLambda|RunnableLambda",
+            "framework": "langchain-core-runnable-parallel-sequence",# 告诉前端/trace 这是新版 LangChain 并行链路。
             "business_template_name": business_template_name or "",
             "business_template_used": business_template_used,
+            "langchain_timing": langchain_timing,
         },
     )
     # 由chain调用了
@@ -494,7 +696,7 @@ def run_langchain_style_agent(
             error_message=result.get("reply", "AI 调用失败"),
             detail={
                 "model": model_key,
-                "framework": "langchain-core-runnable-sequence",
+                "framework": "langchain-core-runnable-parallel-sequence",
             },
         )
 
@@ -569,11 +771,12 @@ def run_langchain_style_agent(
             "knowledge_hit_count": len(knowledge_result.get("results", [])),
             "total_tokens": result.get("total_tokens", 0),
             "cost": result.get("cost", 0.0),
-            "framework": "langchain-core-runnable-sequence",
+            "framework": "langchain-core-runnable-parallel-sequence",
             "structured_output": parsed_answer["structured"],
             "confidence": parsed_answer["confidence"],
             "used_tools": parsed_answer["used_tools"],
             "missing_info_count": len(parsed_answer["missing_info"]),
+            "langchain_timing": langchain_timing,
         },
     )
 
@@ -585,12 +788,13 @@ def run_langchain_style_agent(
         "search_type": search_type,
         "tools": tool_outputs,
         "references": knowledge_result.get("results", []),
-        "framework": "langchain-core-runnable-sequence",
+        "framework": "langchain-core-runnable-parallel-sequence",
         "using_langchain_core": True,
         "structured_output": parsed_answer["structured"],
         "confidence": parsed_answer["confidence"],
         "used_tools": parsed_answer["used_tools"],
         "missing_info": parsed_answer["missing_info"],
+        "langchain_timing": langchain_timing,
     }
 
 

@@ -1023,6 +1023,7 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "confidence": result.get("confidence", "unknown"),
             "used_tools": result.get("used_tools", []),
             "missing_info": result.get("missing_info", []),
+            "langchain_timing": result.get("langchain_timing", {}),
         }
 
         if request_id:

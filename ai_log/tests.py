@@ -1047,6 +1047,8 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertFalse(data["idempotent"])
         self.assertTrue(data["structured_output"])
         self.assertEqual(data["confidence"], "high")
+        self.assertIn("langchain_timing", data)
+        self.assertIn("parallel_total", data["langchain_timing"])
         self.assertIn("knowledge_retriever", data["used_tools"])
 
         tool_names = [item["tool"] for item in data["tools"]]
@@ -1074,6 +1076,7 @@ class KnowledgeDocumentApiTests(TestCase):
         self.assertIn("langchain_tool_memory", step_names)
         self.assertIn("langchain_tool_retriever", step_names)
         self.assertIn("langchain_tool_workflow", step_names)
+        self.assertIn("langchain_parallel_context_done", step_names)
         self.assertIn("langchain_prompt_build", step_names)
         self.assertIn("langchain_agent_done", step_names)
         self.assertIn("using_langchain_core", data)
@@ -1087,10 +1090,10 @@ class KnowledgeDocumentApiTests(TestCase):
 
         self.assertEqual(
             prompt_step.detail["chain_type"],
-            "RunnableLambda|prompt_template|RunnableLambda|RunnableLambda",
+            "RunnableParallel|RunnableLambda|ChatPromptTemplate|RunnableLambda|RunnableLambda",
         )
-        self.assertEqual(prompt_step.detail["framework"], "langchain-core-runnable-sequence")
-
+        self.assertEqual(prompt_step.detail["framework"],  "langchain-core-runnable-parallel-sequence")
+        self.assertIn("parallel_total", prompt_step.detail["langchain_timing"])
         self.assertEqual(prompt_step.detail["business_template_name"], "payment_judge")
         self.assertTrue(prompt_step.detail["business_template_used"])   
 
@@ -1364,6 +1367,10 @@ class KnowledgeDocumentApiTests(TestCase):
             user=self.user,
             step="multi_agent_parallel_context_done",
         )
+        self.assertIn("conversation_memory", parallel_step.detail["parallel_tools"])
+        self.assertIn("knowledge_retriever", parallel_step.detail["parallel_tools"])
+        self.assertIn("workflow_summary", parallel_step.detail["parallel_tools"])
+        self.assertIn("parallel_total", parallel_step.detail["timing"])
 
         self.assertIn("memory", parallel_step.detail["parallel_agents"])
         self.assertIn("retriever", parallel_step.detail["parallel_agents"])
