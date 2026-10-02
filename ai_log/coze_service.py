@@ -158,11 +158,11 @@ def call_coze_job_record_agent(prompt, user_id=None, trace_id=None, session_id=N
         },
         "type": "query",
         "session_id": session_id,
-        "project_id": project_id,
+        "project_id": settings.COZE_PROJECT_ID,
     }
 
     response = requests.post(
-        settings.COZE_API_BASE_URL + "/stream_run",
+        settings.COZE_API_BASE_URL.rstrip("/") + "/stream_run",
         headers={
             "Authorization": f"Bearer {settings.COZE_API_KEY}",
             "Content-Type": "application/json",

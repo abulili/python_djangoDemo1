@@ -82,6 +82,8 @@ from ai_log.multi_agent_service import run_multi_agent
 
 from .coze_service import call_coze_job_record_agent, CozeServiceError
 
+from .n8n_service import send_job_record_to_n8n, N8NServiceError
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -2568,10 +2570,45 @@ class CozeJobRecordAPIView(APIView):
                 duration=(result.get("time_cost_ms") or 0) / 1000,
             )
 
+            n8n_result = None
+
+            try:
+                n8n_result = send_job_record_to_n8n(
+                    trace_id=trace_id,
+                    log_id=log.id,
+                    record=record,
+                )
+
+                AiTraceStepLog.objects.create(
+                    user=user,
+                    trace_id=trace_id,
+                    conversation_id=record.get("company", ""),
+                    step="n8n_job_record_webhook",
+                    query=prompt,
+                    detail={
+                        "provider": "n8n",
+                        "webhook_result": n8n_result,
+                    },
+                    success=True,
+                )
+
+            except N8NServiceError as e:
+                AiTraceStepLog.objects.create(
+                    user=user,
+                    trace_id=trace_id,
+                    conversation_id=record.get("company", ""),
+                    step="n8n_job_record_webhook",
+                    query=prompt,
+                    detail={"provider": "n8n"},
+                    success=False,
+                    error_message=str(e),
+                )
+
             return success_response({
                 "trace_id": trace_id,
                 "log_id": log.id,
                 "record": record,
+                "n8n_result": n8n_result,
             })
 
         except CozeServiceError as e:
@@ -2585,3 +2622,9 @@ class CozeJobRecordAPIView(APIView):
                 error_message=str(e),
             )
             return error_response(str(e), code=502)
+
+    
+        
+
+
+
