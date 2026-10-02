@@ -80,6 +80,8 @@ from ai_log.langchain_agent_service import run_langchain_style_agent
 
 from ai_log.multi_agent_service import run_multi_agent
 
+from .coze_service import call_coze_job_record_agent, CozeServiceError
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -2516,3 +2518,70 @@ def health_check(request):
     }, status=code)
 
 
+class CozeJobRecordAPIView(APIView):
+    def post(self, request):
+        prompt = request.data.get("prompt") or request.data.get("input") or request.data.get("text")
+        if not prompt:
+            return error_response("prompt不能为空", code=400)
+
+        trace_id = request.headers.get("X-Trace-Id") or uuid.uuid4().hex
+        user = request.user if request.user and request.user.is_authenticated else None
+
+        try:
+            result = call_coze_job_record_agent(
+                prompt=prompt,
+                user_id=user.id if user else "anonymous",
+                trace_id=trace_id,
+            )
+
+            token_cost = result.get("token_cost") or {}
+            record = result["record"]
+
+            log = AICallLog.objects.create(
+                user=user,
+                prompt=prompt,
+                response=json.dumps(record, ensure_ascii=False),
+                model_name="coze-job-record-agent",
+                success=True,
+                trace_id=trace_id,
+                conversation_id=record.get("company", ""),
+                prompt_tokens=token_cost.get("input_tokens", 0),
+                completion_tokens=token_cost.get("output_tokens", 0),
+                total_tokens=token_cost.get("total_tokens", 0),
+                duration=(result.get("time_cost_ms") or 0) / 1000,
+            )
+
+            AiTraceStepLog.objects.create(
+                user=user,
+                trace_id=trace_id,
+                conversation_id=record.get("company", ""),
+                step="external_coze_extract",
+                query=prompt,
+                detail={
+                    "provider": "coze",
+                    "record": record,
+                    "token_cost": token_cost,
+                    "time_cost_ms": result.get("time_cost_ms"),
+                    "log_id": log.id,
+                },
+                success=True,
+                duration=(result.get("time_cost_ms") or 0) / 1000,
+            )
+
+            return success_response({
+                "trace_id": trace_id,
+                "log_id": log.id,
+                "record": record,
+            })
+
+        except CozeServiceError as e:
+            AiTraceStepLog.objects.create(
+                user=user,
+                trace_id=trace_id,
+                step="external_coze_extract",
+                query=prompt,
+                detail={"provider": "coze"},
+                success=False,
+                error_message=str(e),
+            )
+            return error_response(str(e), code=502)

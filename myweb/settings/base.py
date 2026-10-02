@@ -306,3 +306,12 @@ EMBEDDING_ENABLED = os.getenv("EMBEDDING_ENABLED", "false").lower() == "true"
 EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", os.getenv("OPENAI_API_KEY", ""))
 EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "")
 DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small")
+
+# Coze 求职面试记录 Agent
+COZE_API_KEY = os.getenv("COZE_API_KEY", "")
+COZE_API_BASE_URL = os.getenv("COZE_API_BASE_URL", "")
+COZE_BOT_ID = os.getenv("COZE_BOT_ID", "")
+COZE_REQUEST_TIMEOUT_SECONDS = int(os.getenv("COZE_REQUEST_TIMEOUT_SECONDS", "30") or 30)
+COZE_POLL_MAX_ATTEMPTS = int(os.getenv("COZE_POLL_MAX_ATTEMPTS", "20") or 20)
+COZE_POLL_INTERVAL_SECONDS = float(os.getenv("COZE_POLL_INTERVAL_SECONDS", "1") or 1)
+COZE_PROJECT_ID = os.getenv("COZE_PROJECT_ID", "")

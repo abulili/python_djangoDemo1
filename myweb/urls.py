@@ -5,7 +5,7 @@ from django.contrib import admin
 from django.urls import path, include
 from django.http import JsonResponse
 from rest_framework.routers import DefaultRouter
-from ai_log.views import (AICallLogViewSet, PromptTemplateViewSet, MyCustomAPIView, health_check, KnowledgeDocumentViewSet, AiTraceStepLogViewSet)
+from ai_log.views import (AICallLogViewSet, PromptTemplateViewSet, MyCustomAPIView, health_check, KnowledgeDocumentViewSet, AiTraceStepLogViewSet, CozeJobRecordAPIView)
 # from rest_framework_simplejwt.views import TokenObtainPairView,TokenRefreshView
 from rest_framework_simplejwt.views import TokenRefreshView
 from users.views import (SingleSessionTokenObtainPairView, SingleSessionTokenRefreshView, LoginEventViewSet)
@@ -49,6 +49,7 @@ urlpatterns = [
     # 因为users在INSTALLED_APPS 中注册
     # include() 将子 URL 配置合并到主 URL 配置中，urlpatterns += urls.urlpatterns
     path('api/users/',include('users.urls')),
+    path("api/integrations/coze/job-record/", CozeJobRecordAPIView.as_view()),
 ]
 
 handler404 = handler404
