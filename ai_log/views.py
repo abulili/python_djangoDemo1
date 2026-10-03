@@ -2567,9 +2567,15 @@ class FeishuEventAPIView(APIView):
     def post(self, request):
         payload = request.data or {}
 
-        # 飞书 URL 校验
-        if payload.get("challenge"):
-            return Response({"challenge": payload.get("challenge")})
+        # 兼容飞书旧版/新版 URL 校验
+        challenge = (
+            payload.get("challenge")
+            or (payload.get("event") or {}).get("challenge")
+        )
+
+        if challenge:
+            return Response({"challenge": challenge})
+
 
         try:
             if not verify_feishu_event_token(payload):
