@@ -84,6 +84,16 @@ from .coze_service import call_coze_job_record_agent, CozeServiceError
 
 from .n8n_service import send_job_record_to_n8n, N8NServiceError
 
+from rest_framework.permissions import AllowAny
+
+from .feishu_bot_service import (
+    FeishuBotError,
+    extract_feishu_text_message,
+    send_feishu_text_message,
+    verify_feishu_event_token,
+)
+from .job_record_service import process_job_record_prompt
+
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
 class MyCustomAPIView(APIView):
@@ -2530,101 +2540,128 @@ class CozeJobRecordAPIView(APIView):
         user = request.user if request.user and request.user.is_authenticated else None
 
         try:
-            result = call_coze_job_record_agent(
+            result = process_job_record_prompt(
                 prompt=prompt,
-                user_id=user.id if user else "anonymous",
-                trace_id=trace_id,
-            )
-
-            token_cost = result.get("token_cost") or {}
-            record = result["record"]
-
-            log = AICallLog.objects.create(
-                user=user,
-                prompt=prompt,
-                response=json.dumps(record, ensure_ascii=False),
-                model_name="coze-job-record-agent",
-                success=True,
-                trace_id=trace_id,
-                conversation_id=record.get("company", ""),
-                prompt_tokens=token_cost.get("input_tokens", 0),
-                completion_tokens=token_cost.get("output_tokens", 0),
-                total_tokens=token_cost.get("total_tokens", 0),
-                duration=(result.get("time_cost_ms") or 0) / 1000,
-            )
-
-            AiTraceStepLog.objects.create(
                 user=user,
                 trace_id=trace_id,
-                conversation_id=record.get("company", ""),
-                step="external_coze_extract",
-                query=prompt,
-                detail={
-                    "provider": "coze",
-                    "record": record,
-                    "token_cost": token_cost,
-                    "time_cost_ms": result.get("time_cost_ms"),
-                    "log_id": log.id,
-                },
-                success=True,
-                duration=(result.get("time_cost_ms") or 0) / 1000,
+                source="api",
             )
+            return success_response(result)
 
-            n8n_result = None
-
-            try:
-                n8n_result = send_job_record_to_n8n(
-                    trace_id=trace_id,
-                    log_id=log.id,
-                    record=record,
-                )
-
+        except CozeServiceError as e:
                 AiTraceStepLog.objects.create(
                     user=user,
                     trace_id=trace_id,
-                    conversation_id=record.get("company", ""),
-                    step="n8n_job_record_webhook",
+                    step="external_coze_extract",
                     query=prompt,
-                    detail={
-                        "provider": "n8n",
-                        "webhook_result": n8n_result,
-                    },
-                    success=True,
-                )
-
-            except N8NServiceError as e:
-                AiTraceStepLog.objects.create(
-                    user=user,
-                    trace_id=trace_id,
-                    conversation_id=record.get("company", ""),
-                    step="n8n_job_record_webhook",
-                    query=prompt,
-                    detail={"provider": "n8n"},
+                    detail={"provider": "coze", "source": "api"},
                     success=False,
                     error_message=str(e),
                 )
+                return error_response(str(e), code=502)
+            
+class FeishuEventAPIView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        payload = request.data or {}
+
+        # 飞书 URL 校验
+        if payload.get("challenge"):
+            return Response({"challenge": payload.get("challenge")})
+
+        try:
+            if not verify_feishu_event_token(payload):
+                return error_response("飞书事件token校验失败", code=403)
+        except FeishuBotError as e:
+            return error_response(str(e), code=403)
+
+        message_info = extract_feishu_text_message(payload)
+        prompt = message_info.get("text", "")
+        trace_id = uuid.uuid4().hex
+
+        if not prompt:
+            return success_response({
+                "ignored": True,
+                "reason": "non_text_or_empty_message",
+                "message_type": message_info.get("message_type", ""),
+            })
+
+        try:
+            result = process_job_record_prompt(
+                prompt=prompt,
+                user=None,
+                trace_id=trace_id,
+                source="feishu_bot",
+                source_detail={
+                    "open_id": message_info.get("open_id", ""),
+                    "message_id": message_info.get("message_id", ""),
+                    "chat_id": message_info.get("chat_id", ""),
+                    "user_id": message_info.get("open_id", "") or "feishu_user",
+                },
+            )
+
+            record = result.get("record") or {}
+
+            reply_text = (
+                "已记录到求职面试表："
+                f"{record.get('company', '-')}"
+                f" / {record.get('position', '-')}"
+                f" / {record.get('status', '-')}"
+                f"\nTrace ID：{result.get('trace_id')}"
+            )
+
+            try:
+                reply_result = send_feishu_text_message(
+                    message_info.get("open_id", ""),
+                    reply_text,
+                )
+            except FeishuBotError as e:
+                reply_result = {
+                    "sent": False,
+                    "reason": "reply_failed",
+                    "error": str(e),
+                }
+
+            AiTraceStepLog.objects.create(
+                trace_id=trace_id,
+                conversation_id=record.get("company", ""),
+                step="feishu_bot_reply",
+                query=prompt,
+                detail={
+                    "provider": "feishu",
+                    "reply_result": reply_result,
+                    "message_info": message_info,
+                },
+                success=bool(reply_result.get("sent")),
+                error_message="" if reply_result.get("sent") else reply_result.get("error", reply_result.get("reason", "")),
+            )
 
             return success_response({
-                "trace_id": trace_id,
-                "log_id": log.id,
-                "record": record,
-                "n8n_result": n8n_result,
+                **result,
+                "reply_result": reply_result,
             })
 
         except CozeServiceError as e:
             AiTraceStepLog.objects.create(
-                user=user,
                 trace_id=trace_id,
-                step="external_coze_extract",
+                step="feishu_bot_job_record_failed",
                 query=prompt,
-                detail={"provider": "coze"},
+                detail={
+                    "provider": "feishu",
+                    "message_info": message_info,
+                },
                 success=False,
                 error_message=str(e),
             )
+
+            try:
+                send_feishu_text_message(
+                    message_info.get("open_id", ""),
+                    f"记录失败：{str(e)[:120]}\nTrace ID：{trace_id}",
+                )
+            except FeishuBotError:
+                pass
+
             return error_response(str(e), code=502)
-
-    
-        
-
-
-
