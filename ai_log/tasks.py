@@ -11,6 +11,15 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from .notifications.feishu import AINotificationContext, send_feishu_ai_notification
 
+from .feishu_bot_service import (
+    FeishuBotError,
+    extract_feishu_text_message,
+    send_feishu_text_message,
+    verify_feishu_event_token,
+)
+
+from .job_record_service import (process_job_record_prompt)
+
 logger = logging.getLogger(__name__)
 
 @shared_task
@@ -513,3 +522,64 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
         }
         
 
+# ai_log/tasks.py
+
+@shared_task
+def process_feishu_job_record_event_task(prompt, message_info, trace_id):
+    from .job_record_service import process_job_record_prompt
+    from .feishu_bot_service import FeishuBotError, send_feishu_text_message
+    from .models import AiTraceStepLog
+
+    result = process_job_record_prompt(
+        prompt=prompt,
+        user=None,
+        trace_id=trace_id,
+        source="feishu_bot",
+        source_detail={
+            "open_id": message_info.get("open_id", ""),
+            "message_id": message_info.get("message_id", ""),
+            "chat_id": message_info.get("chat_id", ""),
+            "user_id": message_info.get("open_id", "") or "feishu_user",
+        },
+    )
+
+    record = result.get("record") or {}
+
+    reply_text = (
+        "已记录到求职面试表："
+        f"{record.get('company', '-')}"
+        f" / {record.get('position', '-')}"
+        f" / {record.get('status', '-')}"
+        f"\nTrace ID：{result.get('trace_id')}"
+    )
+
+    try:
+        reply_result = send_feishu_text_message(
+            message_info.get("open_id", ""),
+            reply_text,
+        )
+    except FeishuBotError as e:
+        reply_result = {
+            "sent": False,
+            "reason": "reply_failed",
+            "error": str(e),
+        }
+
+    AiTraceStepLog.objects.create(
+        trace_id=trace_id,
+        conversation_id=record.get("company", ""),
+        step="feishu_bot_reply",
+        query=prompt,
+        detail={
+            "provider": "feishu",
+            "reply_result": reply_result,
+            "message_info": message_info,
+        },
+        success=bool(reply_result.get("sent")),
+        error_message="" if reply_result.get("sent") else reply_result.get("error", reply_result.get("reason", "")),
+    )
+
+    return {
+        **result,
+        "reply_result": reply_result,
+    }

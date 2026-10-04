@@ -43,7 +43,7 @@ from rest_framework.decorators import throttle_classes
 from .throttles import AICallThrottle, TaskStatusThrottle
 from django.core.cache import cache
 
-from .tasks import call_ai_task,call_ai_task2, call_ai_task4
+from .tasks import call_ai_task,call_ai_task2, call_ai_task4,process_feishu_job_record_event_task
 from celery.result import AsyncResult
 
 from django.db import connections
@@ -2595,79 +2595,17 @@ class FeishuEventAPIView(APIView):
             })
 
         try:
-            result = process_job_record_prompt(
+            process_feishu_job_record_event_task.delay(
                 prompt=prompt,
-                user=None,
+                message_info=message_info,
                 trace_id=trace_id,
-                source="feishu_bot",
-                source_detail={
-                    "open_id": message_info.get("open_id", ""),
-                    "message_id": message_info.get("message_id", ""),
-                    "chat_id": message_info.get("chat_id", ""),
-                    "user_id": message_info.get("open_id", "") or "feishu_user",
-                },
             )
+        except Exception as e:
+            logger.exception("飞书事件入队失败")
+            return error_response(f"飞书事件入队失败: {str(e)}", code=500)
 
-            record = result.get("record") or {}
-
-            reply_text = (
-                "已记录到求职面试表："
-                f"{record.get('company', '-')}"
-                f" / {record.get('position', '-')}"
-                f" / {record.get('status', '-')}"
-                f"\nTrace ID：{result.get('trace_id')}"
-            )
-
-            try:
-                reply_result = send_feishu_text_message(
-                    message_info.get("open_id", ""),
-                    reply_text,
-                )
-            except FeishuBotError as e:
-                reply_result = {
-                    "sent": False,
-                    "reason": "reply_failed",
-                    "error": str(e),
-                }
-
-            AiTraceStepLog.objects.create(
-                trace_id=trace_id,
-                conversation_id=record.get("company", ""),
-                step="feishu_bot_reply",
-                query=prompt,
-                detail={
-                    "provider": "feishu",
-                    "reply_result": reply_result,
-                    "message_info": message_info,
-                },
-                success=bool(reply_result.get("sent")),
-                error_message="" if reply_result.get("sent") else reply_result.get("error", reply_result.get("reason", "")),
-            )
-
-            return success_response({
-                **result,
-                "reply_result": reply_result,
-            })
-
-        except CozeServiceError as e:
-            AiTraceStepLog.objects.create(
-                trace_id=trace_id,
-                step="feishu_bot_job_record_failed",
-                query=prompt,
-                detail={
-                    "provider": "feishu",
-                    "message_info": message_info,
-                },
-                success=False,
-                error_message=str(e),
-            )
-
-            try:
-                send_feishu_text_message(
-                    message_info.get("open_id", ""),
-                    f"记录失败：{str(e)[:120]}\nTrace ID：{trace_id}",
-                )
-            except FeishuBotError:
-                pass
-
-            return error_response(str(e), code=502)
+        return success_response({
+            "received": True,
+            "queued": True,
+            "trace_id": trace_id,
+        })
