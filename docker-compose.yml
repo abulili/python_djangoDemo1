@@ -1,7 +1,6 @@
 version: "3.8"
 
 services:
-  # MySQL 数据库
   db:
     image: mysql:8.0
     container_name: django_mysql
@@ -15,12 +14,13 @@ services:
       - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    networks:
+      - web_net
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       timeout: 10s
       retries: 5
 
-  # Redis 缓存
   redis:
     image: redis:7-alpine
     container_name: django_redis
@@ -29,8 +29,9 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - web_net
 
-  # Django 应用
   web:
     build: .
     container_name: django_web
@@ -44,18 +45,31 @@ services:
         condition: service_started
     environment:
       - DJANGO_SETTINGS_MODULE=myweb.settings.prod
-      - DB_HOST=db
+      - DB_HOST=django_mysql
       - DB_PORT=3306
       - DB_NAME=${DB_NAME}
       - DB_USER=root
       - DB_PASSWORD=${DB_PASSWORD}
-      - REDIS_HOST=redis
+      - REDIS_HOST=django_redis
       - REDIS_PORT=6379
       - SECRET_KEY=${SECRET_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS}
+      - FEISHU_BOT_WEBHOOK=${FEISHU_BOT_WEBHOOK}
+      - FEISHU_APP_ID=${FEISHU_APP_ID}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET}
+      - FEISHU_VERIFICATION_TOKEN=${FEISHU_VERIFICATION_TOKEN}
+      - FEISHU_EVENT_REPLY_ENABLED=${FEISHU_EVENT_REPLY_ENABLED}
+      - FEISHU_EVENT_TOKEN_CHECK_ENABLED=${FEISHU_EVENT_TOKEN_CHECK_ENABLED}
+      - COZE_API=${COZE_API}
+      - COZE_API_KEY=${COZE_API_KEY}
+      - COZE_PROJECT_ID=${COZE_PROJECT_ID}
+      - N8N_JOB_RECORD_WEBHOOK_URL=${N8N_JOB_RECORD_WEBHOOK_URL}
     volumes:
       - ./logs:/app/logs
+    networks:
+      - web_net
+
   worker:
     build: .
     container_name: django_worker
@@ -67,20 +81,36 @@ services:
         condition: service_started
     environment:
       - DJANGO_SETTINGS_MODULE=myweb.settings.prod
-      - DB_HOST=db
+      - DB_HOST=django_mysql
       - DB_PORT=3306
       - DB_NAME=${DB_NAME}
       - DB_USER=root
       - DB_PASSWORD=${DB_PASSWORD}
-      - REDIS_HOST=redis
+      - REDIS_HOST=django_redis
       - REDIS_PORT=6379
       - SECRET_KEY=${SECRET_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS}
       - FEISHU_BOT_WEBHOOK=${FEISHU_BOT_WEBHOOK}
+      - FEISHU_APP_ID=${FEISHU_APP_ID}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET}
+      - FEISHU_VERIFICATION_TOKEN=${FEISHU_VERIFICATION_TOKEN}
+      - FEISHU_EVENT_REPLY_ENABLED=${FEISHU_EVENT_REPLY_ENABLED}
+      - FEISHU_EVENT_TOKEN_CHECK_ENABLED=${FEISHU_EVENT_TOKEN_CHECK_ENABLED}
+      - COZE_API=${COZE_API}
+      - COZE_API_KEY=${COZE_API_KEY}
+      - COZE_PROJECT_ID=${COZE_PROJECT_ID}
+      - N8N_JOB_RECORD_WEBHOOK_URL=${N8N_JOB_RECORD_WEBHOOK_URL}
     command: celery -A myweb worker -l info --concurrency=3
     volumes:
       - ./logs:/app/logs
+    networks:
+      - web_net
 
 volumes:
   mysql_data:
   redis_data:
+
+networks:
+  web_net:
+    external: true

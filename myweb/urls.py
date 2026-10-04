@@ -5,7 +5,8 @@ from django.contrib import admin
 from django.urls import path, include
 from django.http import JsonResponse
 from rest_framework.routers import DefaultRouter
-from ai_log.views import (AICallLogViewSet, PromptTemplateViewSet, MyCustomAPIView, health_check, KnowledgeDocumentViewSet, AiTraceStepLogViewSet, CozeJobRecordAPIView,FeishuEventAPIView)
+from ai_log.views import (AICallLogViewSet, PromptTemplateViewSet, MyCustomAPIView, health_check, KnowledgeDocumentViewSet, 
+AiTraceStepLogViewSet, CozeJobRecordAPIView,FeishuEventAPIView,feishu_event_callback)
 # from rest_framework_simplejwt.views import TokenObtainPairView,TokenRefreshView
 from rest_framework_simplejwt.views import TokenRefreshView
 from users.views import (SingleSessionTokenObtainPairView, SingleSessionTokenRefreshView, LoginEventViewSet)
@@ -50,7 +51,7 @@ urlpatterns = [
     # include() 将子 URL 配置合并到主 URL 配置中，urlpatterns += urls.urlpatterns
     path('api/users/',include('users.urls')),
     path("api/integrations/coze/job-record/", CozeJobRecordAPIView.as_view()),
-    path("api/integrations/feishu/events/", FeishuEventAPIView.as_view()),
+    path("api/integrations/feishu/events/", feishu_event_callback),
 ]
 
 handler404 = handler404

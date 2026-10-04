@@ -26,6 +26,9 @@ class IPBlockMiddleware:
 
     # 每次请求来了都会执行
     def __call__(self, request):
+        if request.path.startswith("/api/integrations/feishu/events/"):
+            return self.get_response(request)
+            
         client_ip = get_client_ip(request)
     
         if client_ip in getattr(settings, "IP_BLOCK_EXEMPT_IPS", []):
@@ -49,6 +52,8 @@ class RequestRiskEventMiddleware:
 
     def __call__(self, request):
         response = self.get_response(request)
+        if request.path.startswith("/api/integrations/feishu/events/"):
+            return response
 
         try:
             record_request_risk_event(request, response)

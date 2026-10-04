@@ -93,6 +93,9 @@ from .feishu_bot_service import (
     verify_feishu_event_token,
 )
 from .job_record_service import process_job_record_prompt
+import threading
+
+from django.views.decorators.csrf import csrf_exempt
 
 # 你想要一个完全自定义的接口，不遵循标准的 CRUD 模式
 # 一个class只能一个post，定义什么请求就是什么，但是可以有很多不同功能的class
@@ -2594,18 +2597,81 @@ class FeishuEventAPIView(APIView):
                 "message_type": message_info.get("message_type", ""),
             })
 
-        try:
-            process_feishu_job_record_event_task.delay(
-                prompt=prompt,
-                message_info=message_info,
-                trace_id=trace_id,
-            )
-        except Exception as e:
-            logger.exception("飞书事件入队失败")
-            return error_response(f"飞书事件入队失败: {str(e)}", code=500)
+        def enqueue_feishu_task():
+            try:
+                process_feishu_job_record_event_task.delay(
+                    prompt=prompt,
+                    message_info=message_info,
+                    trace_id=trace_id,
+                )
+            except Exception:
+                logger.exception("飞书事件异步入队失败")
+
+        threading.Thread(target=enqueue_feishu_task, daemon=True).start()
 
         return success_response({
             "received": True,
             "queued": True,
             "trace_id": trace_id,
         })
+
+@csrf_exempt
+def feishu_event_callback(request):
+    t0 = time.time()
+    logger.warning("feishu callback enter %.3f", t0)
+
+    if request.method != "POST":
+        return JsonResponse({"code": 405, "message": "method not allowed", "data": None}, status=405)
+
+    raw_body = request.body
+    logger.warning("feishu read body cost %.3f", time.time() - t0)
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"code": 400, "message": "invalid json", "data": None}, status=400)
+
+    logger.warning("feishu json loads cost %.3f", time.time() - t0)
+
+    challenge = payload.get("challenge") or (payload.get("event") or {}).get("challenge")
+    if challenge:
+        return JsonResponse({"challenge": challenge})
+
+    if not verify_feishu_event_token(payload):
+        return JsonResponse({"code": 403, "message": "飞书事件token校验失败", "data": None}, status=403)
+
+    logger.warning("feishu token verified cost %.3f", time.time() - t0)
+
+    message_info = extract_feishu_text_message(payload)
+    prompt = message_info.get("text", "")
+    trace_id = uuid.uuid4().hex
+
+    logger.warning("feishu extract message cost %.3f", time.time() - t0)
+
+    def enqueue_feishu_task():
+        try:
+            process_feishu_job_record_event_task.apply_async(
+                kwargs={
+                    "prompt": prompt,
+                    "message_info": message_info,
+                    "trace_id": trace_id,
+                },
+                ignore_result=True,
+            )
+        except Exception:
+            logger.exception("飞书事件异步入队失败")
+
+    threading.Thread(target=enqueue_feishu_task, daemon=True).start()
+
+    logger.warning("feishu before return cost %.3f", time.time() - t0)
+
+    return JsonResponse({
+        "code": 200,
+        "message": "success",
+        "data": {
+            "received": True,
+            "queued": True,
+            "trace_id": trace_id,
+        }
+    })
+    
