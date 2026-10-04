@@ -2646,32 +2646,63 @@ def feishu_event_callback(request):
     prompt = message_info.get("text", "")
     trace_id = uuid.uuid4().hex
 
-    logger.warning("feishu extract message cost %.3f", time.time() - t0)
+    message_id = message_info.get("message_id", "")
 
-    def enqueue_feishu_task():
-        try:
-            process_feishu_job_record_event_task.apply_async(
-                kwargs={
-                    "prompt": prompt,
-                    "message_info": message_info,
-                    "trace_id": trace_id,
+    if not prompt:
+        return JsonResponse({
+            "code": 0,
+            "message": "ignored",
+            "data": {
+                "ignored": True,
+                "reason": "non_text_or_empty_message",
+                "message_type": message_info.get("message_type", ""),
+            },
+        })
+
+    if message_id:
+        idempotent_key = f"feishu_job_record_message:{message_id}"
+        locked = cache.add(idempotent_key, trace_id, timeout=24 * 60 * 60)
+
+        if not locked:
+            return JsonResponse({
+                "code": 0,
+                "message": "duplicate message ignored",
+                "data": {
+                    "duplicate": True,
+                    "message_id": message_id,
                 },
-                ignore_result=True,
-            )
-        except Exception:
-            logger.exception("飞书事件异步入队失败")
+            })
 
-    threading.Thread(target=enqueue_feishu_task, daemon=True).start()
+        logger.warning("feishu extract message cost %.3f", time.time() - t0)
+
+    try:
+        process_feishu_job_record_event_task.apply_async(
+            kwargs={
+                "prompt": prompt,
+                "message_info": message_info,
+                "trace_id": trace_id,
+            },
+            ignore_result=True,
+        )
+    except Exception:
+        logger.exception("飞书事件异步入队失败")
+        return JsonResponse({
+            "code": 500,
+            "message": "task enqueue failed",
+            "data": {
+                "trace_id": trace_id,
+            },
+        }, status=500)
 
     logger.warning("feishu before return cost %.3f", time.time() - t0)
 
     return JsonResponse({
-        "code": 200,
-        "message": "success",
+        "code": 0,
+        "message": "received",
         "data": {
             "received": True,
             "queued": True,
             "trace_id": trace_id,
-        }
+        },
     })
-    
+        

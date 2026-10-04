@@ -21,7 +21,11 @@ from .services import calculate_cost
 
 from unittest.mock import patch
 
-from ai_log.tasks import call_ai_task4, get_ai_retry_countdown
+from ai_log.tasks import (
+    call_ai_task4,
+    get_ai_retry_countdown,
+    process_feishu_job_record_event_task,
+)
 
 from django.test import override_settings
 from unittest.mock import patch
@@ -44,6 +48,10 @@ from io import StringIO
 from workflows.models import WorkflowRequest
 
 import json
+
+from ai_log.tasks import process_feishu_job_record_event_task
+
+
 
 class RegServiceTests(TestCase):
     def test_aplit_text_to_chunks_with_overlap(self):
@@ -2110,6 +2118,175 @@ class KnowledgeDocumentApiTests(TransactionTestCase):
         self.assertNotIn("workflow", supervisor_step.detail["selected_agents"])
 
         self.assertEqual(mock_call_ai_service.call_count, 2)
+
+    # 飞书测试
+    @override_settings(FEISHU_VERIFICATION_TOKEN="test-token")
+    @patch("ai_log.views.process_feishu_job_record_event_task.apply_async")
+    def test_feishu_event_ignores_empty_or_non_text_message(self, mock_apply_async):
+        payload = {
+            "token": "test-token",
+            "event": {
+                "sender": {
+                    "sender_id": {
+                        "open_id": "ou_test",
+                    }
+                },
+                "message": {
+                    "message_type": "image",
+                    "message_id": "msg-empty-001",
+                    "chat_id": "chat_test",
+                    "content": "{}",
+                },
+            },
+        }
+
+        response = self.client.post(
+            "/api/integrations/feishu/events/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["message"], "ignored")
+        self.assertTrue(response.json()["data"]["ignored"])
+        mock_apply_async.assert_not_called()
+
+    @override_settings(FEISHU_VERIFICATION_TOKEN="test-token")
+    @patch("ai_log.views.process_feishu_job_record_event_task.apply_async")
+    def test_feishu_event_enqueues_job_record_task(self, mock_apply_async):
+        payload = {
+            "token": "test-token",
+            "event": {
+                "sender": {
+                    "sender_id": {
+                        "open_id": "ou_test",
+                    }
+                },
+                "message": {
+                    "message_type": "text",
+                    "message_id": "msg-normal-001",
+                    "chat_id": "chat_test",
+                    "content": json.dumps({
+                        "text": "今天面了字节后端岗位，主要问了 Django、Redis 和 Celery。",
+                    }, ensure_ascii=False),
+                },
+            },
+        }
+
+        response = self.client.post(
+            "/api/integrations/feishu/events/",
+            data=json.dumps(payload, ensure_ascii=False),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertTrue(data["received"])
+        self.assertTrue(data["queued"])
+        self.assertTrue(data["trace_id"])
+
+        mock_apply_async.assert_called_once()
+        kwargs = mock_apply_async.call_args.kwargs["kwargs"]
+        self.assertIn("字节后端岗位", kwargs["prompt"])
+        self.assertEqual(kwargs["message_info"]["message_id"], "msg-normal-001")
+
+    @override_settings(FEISHU_VERIFICATION_TOKEN="test-token")
+    @patch("ai_log.views.process_feishu_job_record_event_task.apply_async")
+    def test_feishu_event_deduplicates_by_message_id(self, mock_apply_async):
+        payload = {
+            "token": "test-token",
+            "event": {
+                "sender": {
+                    "sender_id": {
+                        "open_id": "ou_test",
+                    }
+                },
+                "message": {
+                    "message_type": "text",
+                    "message_id": "msg-duplicate-001",
+                    "chat_id": "chat_test",
+                    "content": json.dumps({
+                        "text": "今天面了美团 Python 后端岗位。",
+                    }, ensure_ascii=False),
+                },
+            },
+        }
+
+        first_response = self.client.post(
+            "/api/integrations/feishu/events/",
+            data=json.dumps(payload, ensure_ascii=False),
+            content_type="application/json",
+        )
+
+        second_response = self.client.post(
+            "/api/integrations/feishu/events/",
+            data=json.dumps(payload, ensure_ascii=False),
+            content_type="application/json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+
+        second_data = second_response.json()["data"]
+        self.assertTrue(second_data["duplicate"])
+        self.assertEqual(second_data["message_id"], "msg-duplicate-001")
+
+        mock_apply_async.assert_called_once()
+
+    @patch("ai_log.tasks.send_feishu_text_message")
+    @patch("ai_log.tasks.process_job_record_prompt")
+    def test_process_feishu_job_record_event_task_records_trace_and_replies_when_failed(
+        self,
+        mock_process_job_record_prompt,
+        mock_send_feishu_text_message,
+    ):
+        mock_process_job_record_prompt.side_effect = Exception("coze timeout")
+        mock_send_feishu_text_message.return_value = {
+            "sent": True,
+            "response": {
+                "code": 0,
+            },
+        }
+
+        message_info = {
+            "open_id": "ou_test",
+            "message_id": "msg-task-failed-001",
+            "chat_id": "chat_test",
+            "message_type": "text",
+        }
+
+        result = process_feishu_job_record_event_task(
+            prompt="今天面了字节后端岗位，问了 Django 和 Redis。",
+            message_info=message_info,
+            trace_id="trace-feishu-task-failed",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["trace_id"], "trace-feishu-task-failed")
+        self.assertIn("coze timeout", result["error"])
+
+        failed_step = AiTraceStepLog.objects.get(
+            trace_id="trace-feishu-task-failed",
+            step="feishu_job_record_failed",
+        )
+        self.assertFalse(failed_step.success)
+        self.assertIn("coze timeout", failed_step.error_message)
+        self.assertEqual(failed_step.detail["provider"], "coze_n8n_chain")
+        self.assertEqual(
+            failed_step.detail["message_info"]["message_id"],
+            "msg-task-failed-001",
+        )
+
+        reply_step = AiTraceStepLog.objects.get(
+            trace_id="trace-feishu-task-failed",
+            step="feishu_bot_reply",
+        )
+        self.assertTrue(reply_step.success)
+        self.assertEqual(reply_step.detail["provider"], "feishu")
+        self.assertTrue(reply_step.detail["reply_result"]["sent"])
+
+        mock_process_job_record_prompt.assert_called_once()
+        mock_send_feishu_text_message.assert_called_once()
 
 
 class AICallLogApiTests(TestCase):

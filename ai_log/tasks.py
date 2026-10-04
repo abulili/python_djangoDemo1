@@ -530,18 +530,67 @@ def process_feishu_job_record_event_task(prompt, message_info, trace_id):
     from .feishu_bot_service import FeishuBotError, send_feishu_text_message
     from .models import AiTraceStepLog
 
-    result = process_job_record_prompt(
-        prompt=prompt,
-        user=None,
-        trace_id=trace_id,
-        source="feishu_bot",
-        source_detail={
-            "open_id": message_info.get("open_id", ""),
-            "message_id": message_info.get("message_id", ""),
-            "chat_id": message_info.get("chat_id", ""),
-            "user_id": message_info.get("open_id", "") or "feishu_user",
-        },
-    )
+    try:
+        result = process_job_record_prompt(
+            prompt=prompt,
+            user=None,
+            trace_id=trace_id,
+            source="feishu_bot",
+            source_detail={
+                "open_id": message_info.get("open_id", ""),
+                "message_id": message_info.get("message_id", ""),
+                "chat_id": message_info.get("chat_id", ""),
+                "user_id": message_info.get("open_id", "") or "feishu_user",
+            },
+        )
+    except Exception as e:
+        error_text = str(e)
+
+        AiTraceStepLog.objects.create(
+            trace_id=trace_id,
+            conversation_id="",
+            step="feishu_job_record_failed",
+            query=prompt,
+            detail={
+                "provider": "coze_n8n_chain",
+                "message_info": message_info,
+            },
+            success=False,
+            error_message=error_text,
+        )
+
+        try:
+            reply_result = send_feishu_text_message(
+                message_info.get("open_id", ""),
+                f"求职记录处理失败，请稍后重试。\nTrace ID：{trace_id}",
+            )
+        except FeishuBotError as reply_error:
+            reply_result = {
+                "sent": False,
+                "reason": "reply_failed",
+                "error": str(reply_error),
+            }
+
+        AiTraceStepLog.objects.create(
+            trace_id=trace_id,
+            conversation_id="",
+            step="feishu_bot_reply",
+            query=prompt,
+            detail={
+                "provider": "feishu",
+                "reply_result": reply_result,
+                "message_info": message_info,
+            },
+            success=bool(reply_result.get("sent")),
+            error_message="" if reply_result.get("sent") else reply_result.get("error", reply_result.get("reason", "")),
+        )
+
+        return {
+            "status": "failed",
+            "trace_id": trace_id,
+            "error": error_text,
+            "reply_result": reply_result,
+        }
 
     record = result.get("record") or {}
 
