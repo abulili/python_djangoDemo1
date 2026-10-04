@@ -20,6 +20,8 @@ from .feishu_bot_service import (
 
 from .job_record_service import (process_job_record_prompt)
 
+from .langchain_agent_service import run_langchain_style_agent
+
 logger = logging.getLogger(__name__)
 
 @shared_task
@@ -522,7 +524,172 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
         }
         
 
-# ai_log/tasks.py
+@shared_task(bind=True, soft_time_limit=240, time_limit=300)
+def langchain_agent_task(
+    self,
+    query,
+    user_id,
+    conversation_id=None,
+    top_k=3,
+    search_type="hybrid",
+    model_key=None,
+    trace_id="",
+    business_template_name=None,
+    business_template_vars=None,
+):
+    user = User.objects.get(id=user_id)
+    business_template_vars = business_template_vars or {}
+
+    start_time = time.time()
+
+    AiTraceStepLog.objects.create(
+        user=user,
+        trace_id=trace_id,
+        conversation_id=conversation_id or "",
+        step="langchain_agent_task_start",
+        query=query,
+        detail={
+            "task_id": self.request.id,
+            "search_type": search_type,
+            "top_k": top_k,
+            "model_key": model_key,
+            "business_template_name": business_template_name or "",
+        },
+    )
+
+    try:
+        result = run_langchain_style_agent(
+            user=user,
+            query=query,
+            conversation_id=conversation_id,
+            top_k=top_k,
+            search_type=search_type,
+            model_key=model_key,
+            trace_id=trace_id,
+            call_ai_service=call_ai_service,
+            business_template_name=business_template_name,
+            business_template_vars=business_template_vars,
+        )
+
+        duration = time.time() - start_time
+
+        if not result.get("success"):
+            error_message = result.get("error", "LangChain Agent 调用失败")
+
+            AICallLog.objects.create(
+                user=user,
+                prompt=query,
+                response=error_message,
+                success=False,
+                model_name=model_key or "",
+                trace_id=trace_id,
+                conversation_id=conversation_id or "",
+                duration=duration,
+                task_id=self.request.id or "",
+            )
+
+            AiTraceStepLog.objects.create(
+                user=user,
+                trace_id=trace_id,
+                conversation_id=conversation_id or "",
+                step="langchain_agent_task_failed",
+                query=query,
+                success=False,
+                error_message=error_message,
+                duration=duration,
+                detail={
+                    "task_id": self.request.id,
+                    "framework": result.get("framework", ""),
+                },
+            )
+
+            return {
+                "status": "error",
+                "message": error_message,
+                "trace_id": trace_id,
+                "conversation_id": conversation_id,
+            }
+
+        answer = result.get("answer", "")
+        usage = result.get("usage", {}) or {}
+
+        AICallLog.objects.create(
+            user=user,
+            prompt=query,
+            response=answer,
+            success=True,
+            model_name=model_key or "",
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            duration=duration,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            cost=usage.get("cost", 0.0),
+            task_id=self.request.id or "",
+        )
+
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            step="langchain_agent_task_done",
+            query=query,
+            success=True,
+            duration=duration,
+            detail={
+                "task_id": self.request.id,
+                "framework": result.get("framework", ""),
+                "references_count": len(result.get("references", [])),
+                "tool_count": len(result.get("tools", [])),
+            },
+        )
+
+        return {
+            "status": "success",
+            "trace_id": trace_id,
+            "conversation_id": conversation_id,
+            "answer": answer,
+            "result": result,
+        }
+
+    except Exception as e:
+        duration = time.time() - start_time
+        error_message = str(e)
+
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            step="langchain_agent_task_failed",
+            query=query,
+            success=False,
+            error_message=error_message,
+            duration=duration,
+            detail={
+                "task_id": self.request.id,
+                "reason": "unhandled_exception",
+            },
+        )
+
+        AICallLog.objects.create(
+            user=user,
+            prompt=query,
+            response=error_message,
+            success=False,
+            model_name=model_key or "",
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            duration=duration,
+            task_id=self.request.id or "",
+        )
+
+        return {
+            "status": "error",
+            "message": error_message,
+            "trace_id": trace_id,
+            "conversation_id": conversation_id,
+        }
 
 @shared_task
 def process_feishu_job_record_event_task(prompt, message_info, trace_id):

@@ -43,7 +43,13 @@ from rest_framework.decorators import throttle_classes
 from .throttles import AICallThrottle, TaskStatusThrottle
 from django.core.cache import cache
 
-from .tasks import call_ai_task,call_ai_task2, call_ai_task4,process_feishu_job_record_event_task
+from .tasks import (
+    call_ai_task,
+    call_ai_task2,
+    call_ai_task4,
+    process_feishu_job_record_event_task,
+    langchain_agent_task,
+)
 from celery.result import AsyncResult
 
 from django.db import connections
@@ -1047,6 +1053,99 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             cache.set(idempotent_key, response_data, timeout=300)
 
         return success_response(response_data)
+
+    @action(detail=False, methods=["post"], url_path="langchain-agent-ask-async", throttle_classes=[AICallThrottle])
+    def langchain_agent_ask_async(self, request):
+        query = request.data.get("query", "")
+        top_k = int(request.data.get("top_k", 3))
+        search_type = request.data.get("search_type", "hybrid")
+        conversation_id = request.data.get("conversation_id")
+        trace_id = getattr(request, "trace_id", "")
+        request_id = request.data.get("request_id")
+        model_key = request.data.get(
+            "model",
+            getattr(settings, "DEFAULT_AI_MODEL", "deepseek"),
+        )
+        business_template_name = request.data.get("template_name")
+        business_template_vars = request.data.get("template_vars") or {}
+
+        if not query.strip():
+            return error_response("请提供query", code=400)
+
+        idempotent_key = None
+        idempotent_lock_key = None
+
+        if request_id:
+            idempotent_key = f"langchain_agent_task_idempotent:{request.user.id}:{request_id}"
+            idempotent_lock_key = f"langchain_agent_task_idempotent_lock:{request.user.id}:{request_id}"
+
+            cached_task_id = cache.get(idempotent_key)
+            if cached_task_id:
+                AiTraceStepLog.objects.create(
+                    user=request.user,
+                    trace_id=trace_id,
+                    conversation_id=conversation_id or "",
+                    step="langchain_agent_task_idempotent_hit",
+                    query=query,
+                    detail={
+                        "request_id": request_id,
+                        "task_id": cached_task_id,
+                    },
+                    success=True,
+                )
+                return success_response({
+                    "task_id": cached_task_id,
+                    "status": "processing",
+                    "idempotent": True,
+                    "message": "重复请求已复用原任务",
+                }, message="任务已存在")
+
+            got_lock = cache.add(idempotent_lock_key, "1", timeout=10)
+            if not got_lock:
+                return error_response(
+                    "任务正在提交中，请稍后查询",
+                    code=409,
+                    data={"request_id": request_id},
+                )
+
+        try:
+            task = langchain_agent_task.apply_async(
+                kwargs={
+                    "query": query,
+                    "user_id": request.user.id,
+                    "conversation_id": conversation_id,
+                    "top_k": top_k,
+                    "search_type": search_type,
+                    "model_key": model_key,
+                    "trace_id": trace_id,
+                    "business_template_name": business_template_name,
+                    "business_template_vars": business_template_vars,
+                }
+            )
+
+            cache.set(f"ai_task_owner:{task.id}", {
+                "user_id": request.user.id,
+                "conversation_id": conversation_id or "",
+                "trace_id": trace_id,
+            }, timeout=getattr(settings, "AI_TASK_OWNER_CACHE_SECONDS", 3600))
+
+            if request_id:
+                cache.set(idempotent_key, task.id, timeout=300)
+                cache.delete(idempotent_lock_key)
+
+            return success_response({
+                "task_id": task.id,
+                "status": "processing",
+                "conversation_id": conversation_id,
+                "trace_id": trace_id,
+                "idempotent": False,
+                "message": "LangChain Agent 正在处理中，请稍后通过 task_id 查询结果",
+            }, message="任务已提交")
+
+        except Exception:
+            if idempotent_lock_key:
+                cache.delete(idempotent_lock_key)
+            raise
 
     @action(detail=False, methods=["post"], url_path="multi-agent-ask", throttle_classes=[AICallThrottle])
     def multi_agent_ask(self, request):
