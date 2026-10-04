@@ -2647,6 +2647,8 @@ def feishu_event_callback(request):
     trace_id = uuid.uuid4().hex
 
     message_id = message_info.get("message_id", "")
+    idempotent_key = ""
+    
 
     if not prompt:
         return JsonResponse({
@@ -2673,7 +2675,7 @@ def feishu_event_callback(request):
                 },
             })
 
-        logger.warning("feishu extract message cost %.3f", time.time() - t0)
+    logger.warning("feishu extract message cost %.3f", time.time() - t0)
 
     try:
         process_feishu_job_record_event_task.apply_async(
@@ -2685,12 +2687,15 @@ def feishu_event_callback(request):
             ignore_result=True,
         )
     except Exception:
+        if idempotent_key:
+            cache.delete(idempotent_key)
         logger.exception("飞书事件异步入队失败")
         return JsonResponse({
             "code": 500,
             "message": "task enqueue failed",
             "data": {
                 "trace_id": trace_id,
+                "message_id": message_id,
             },
         }, status=500)
 
