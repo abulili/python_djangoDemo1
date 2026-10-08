@@ -49,6 +49,7 @@ from .tasks import (
     call_ai_task4,
     process_feishu_job_record_event_task,
     langchain_agent_task,
+    multi_agent_task,
 )
 from celery.result import AsyncResult
 
@@ -1223,6 +1224,111 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
             "agent_failures": result.get("agent_failures", {}),
         })
         
+    # muti-agent异步
+    @action(detail=False, methods=["post"], url_path="multi-agent-ask-async", throttle_classes=[AICallThrottle])
+    def multi_agent_ask_async(self, request):
+        query = request.data.get("query", "")
+        top_k = int(request.data.get("top_k", 3))
+        search_type = request.data.get("search_type", "hybrid")
+        conversation_id = request.data.get("conversation_id")
+        trace_id = getattr(request, "trace_id", "")
+        request_id = request.data.get("request_id")
+        router_type = request.data.get("router_type", "rule")
+        enabled_agents = request.data.get("enabled_agents")
+        model_key = request.data.get(
+            "model",
+            getattr(
+                settings,
+                "DEFAULT_MULTI_AGENT_ANSWER_MODEL",
+                getattr(settings, "DEFAULT_AI_MODEL", "deepseek"),
+            ),
+        )
+        router_model_key = request.data.get(
+            "router_model",
+            getattr(settings, "DEFAULT_JEV_ROUTER_MODEL", "jev"),
+        )
+
+        if not query.strip():
+            return error_response("请提供query", code=400)
+
+        idempotent_key = None
+        idempotent_lock_key = None
+
+        if request_id:
+            idempotent_key = f"multi_agent_task_idempotent:{request.user.id}:{request_id}"
+            idempotent_lock_key = f"multi_agent_task_idempotent_lock:{request.user.id}:{request_id}"
+
+            cached_task_id = cache.get(idempotent_key)
+            if cached_task_id:
+                AiTraceStepLog.objects.create(
+                    user=request.user,
+                    trace_id=trace_id,
+                    conversation_id=conversation_id or "",
+                    step="multi_agent_task_idempotent_hit",
+                    query=query,
+                    detail={
+                        "request_id": request_id,
+                        "task_id": cached_task_id,
+                        "router_type": router_type,
+                    },
+                    success=True,
+                )
+                return success_response({
+                    "task_id": cached_task_id,
+                    "status": "processing",
+                    "idempotent": True,
+                    "message": "重复请求已复用原任务",
+                }, message="任务已存在")
+
+            got_lock = cache.add(idempotent_lock_key, "1", timeout=10)
+            if not got_lock:
+                return error_response(
+                    "任务正在提交中，请稍后查询",
+                    code=409,
+                    data={"request_id": request_id},
+                )
+
+        try:
+            task = multi_agent_task.apply_async(
+                kwargs={
+                    "query": query,
+                    "user_id": request.user.id,
+                    "conversation_id": conversation_id,
+                    "top_k": top_k,
+                    "search_type": search_type,
+                    "model_key": model_key,
+                    "trace_id": trace_id,
+                    "router_type": router_type,
+                    "router_model_key": router_model_key,
+                    "enabled_agents": enabled_agents,
+                }
+            )
+
+            cache.set(f"ai_task_owner:{task.id}", {
+                "user_id": request.user.id,
+                "conversation_id": conversation_id or "",
+                "trace_id": trace_id,
+            }, timeout=getattr(settings, "AI_TASK_OWNER_CACHE_SECONDS", 3600))
+
+            if request_id:
+                cache.set(idempotent_key, task.id, timeout=300)
+                cache.delete(idempotent_lock_key)
+
+            return success_response({
+                "task_id": task.id,
+                "status": "processing",
+                "conversation_id": conversation_id,
+                "trace_id": trace_id,
+                "idempotent": False,
+                "router_type": router_type,
+                "message": "Multi-Agent 正在处理中，请稍后通过 task_id 查询结果",
+            }, message="任务已提交")
+
+        except Exception:
+            if idempotent_lock_key:
+                cache.delete(idempotent_lock_key)
+            raise
+
 
 class AICallLogViewSet(viewsets.ModelViewSet):
     """

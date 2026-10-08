@@ -22,6 +22,8 @@ from .job_record_service import (process_job_record_prompt)
 
 from .langchain_agent_service import run_langchain_style_agent
 
+from .multi_agent_service import run_multi_agent
+
 logger = logging.getLogger(__name__)
 
 @shared_task
@@ -668,6 +670,182 @@ def langchain_agent_task(
             duration=duration,
             detail={
                 "task_id": self.request.id,
+                "reason": "unhandled_exception",
+            },
+        )
+
+        AICallLog.objects.create(
+            user=user,
+            prompt=query,
+            response=error_message,
+            success=False,
+            model_name=model_key or "",
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            duration=duration,
+            task_id=self.request.id or "",
+        )
+
+        return {
+            "status": "error",
+            "message": error_message,
+            "trace_id": trace_id,
+            "conversation_id": conversation_id,
+        }
+
+@shared_task(bind=True, soft_time_limit=240, time_limit=300)
+def multi_agent_task(
+    self,
+    query,
+    user_id,
+    conversation_id=None,
+    top_k=3,
+    search_type="hybrid",
+    model_key=None,
+    trace_id="",
+    router_type="rule",
+    router_model_key=None,
+    enabled_agents=None,
+):
+    user = User.objects.get(id=user_id)
+    enabled_agents = enabled_agents or []
+
+    start_time = time.time()
+
+    AiTraceStepLog.objects.create(
+        user=user,
+        trace_id=trace_id,
+        conversation_id=conversation_id or "",
+        step="multi_agent_task_start",
+        query=query,
+        detail={
+            "task_id": self.request.id,
+            "search_type": search_type,
+            "top_k": top_k,
+            "model_key": model_key,
+            "router_type": router_type,
+            "router_model_key": router_model_key,
+            "enabled_agents": enabled_agents,
+        },
+    )
+
+    try:
+        result = run_multi_agent(
+            user=user,
+            query=query,
+            conversation_id=conversation_id,
+            top_k=top_k,
+            search_type=search_type,
+            model_key=model_key,
+            trace_id=trace_id,
+            call_ai_service=call_ai_service,
+            router_type=router_type,
+            router_model_key=router_model_key,
+            enabled_agents=enabled_agents,
+        )
+
+        duration = time.time() - start_time
+
+        if not result.get("success"):
+            error_message = result.get("error", "Multi-Agent 调用失败")
+
+            AICallLog.objects.create(
+                user=user,
+                prompt=query,
+                response=error_message,
+                success=False,
+                model_name=model_key or "",
+                trace_id=trace_id,
+                conversation_id=conversation_id or "",
+                duration=duration,
+                task_id=self.request.id or "",
+            )
+
+            AiTraceStepLog.objects.create(
+                user=user,
+                trace_id=trace_id,
+                conversation_id=conversation_id or "",
+                step="multi_agent_task_failed",
+                query=query,
+                success=False,
+                error_message=error_message,
+                duration=duration,
+                detail={
+                    "task_id": self.request.id,
+                    "router_type": router_type,
+                    "agents": result.get("agents", []),
+                    "agent_plan": result.get("agent_plan", {}),
+                    "agent_failures": result.get("agent_failures", {}),
+                },
+            )
+
+            return {
+                "status": "error",
+                "message": error_message,
+                "trace_id": trace_id,
+                "conversation_id": conversation_id,
+            }
+
+        answer = result.get("answer", "")
+        usage_summary = result.get("usage_summary", {}) or {}
+
+        AICallLog.objects.create(
+            user=user,
+            prompt=query,
+            response=answer,
+            success=True,
+            model_name=model_key or "",
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            duration=duration,
+            total_tokens=usage_summary.get("total_tokens", 0),
+            cost=usage_summary.get("total_cost", 0.0),
+            task_id=self.request.id or "",
+        )
+
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            step="multi_agent_task_done",
+            query=query,
+            success=True,
+            duration=duration,
+            detail={
+                "task_id": self.request.id,
+                "router_type": router_type,
+                "agents": result.get("agents", []),
+                "references_count": len(result.get("references", [])),
+                "agent_plan": result.get("agent_plan", {}),
+                "agent_failures": result.get("agent_failures", {}),
+                "usage_summary": usage_summary,
+            },
+        )
+
+        return {
+            "status": "success",
+            "trace_id": trace_id,
+            "conversation_id": conversation_id,
+            "answer": answer,
+            "result": result,
+        }
+
+    except Exception as e:
+        duration = time.time() - start_time
+        error_message = str(e)
+
+        AiTraceStepLog.objects.create(
+            user=user,
+            trace_id=trace_id,
+            conversation_id=conversation_id or "",
+            step="multi_agent_task_failed",
+            query=query,
+            success=False,
+            error_message=error_message,
+            duration=duration,
+            detail={
+                "task_id": self.request.id,
+                "router_type": router_type,
                 "reason": "unhandled_exception",
             },
         )
