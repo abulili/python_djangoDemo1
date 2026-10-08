@@ -26,6 +26,56 @@ from .multi_agent_service import run_multi_agent
 
 logger = logging.getLogger(__name__)
 
+
+def _get_task_user_or_record_missing(
+    *,
+    user_id,
+    trace_id,
+    conversation_id,
+    query,
+    task_id,
+    model_key="",
+    failed_step,
+    extra_detail=None,
+):
+    user = User.objects.filter(id=user_id).first()
+    if user:
+        return user
+
+    error_message = f"任务用户不存在: user_id={user_id}"
+    detail = {
+        "reason": "user_not_found",
+        "user_id": user_id,
+        "task_id": task_id or "",
+    }
+    if extra_detail:
+        detail.update(extra_detail)
+
+    AiTraceStepLog.objects.create(
+        user=None,
+        trace_id=trace_id,
+        conversation_id=conversation_id or "",
+        step=failed_step,
+        query=query,
+        success=False,
+        error_message=error_message,
+        detail=detail,
+    )
+
+    AICallLog.objects.create(
+        user=None,
+        prompt=query,
+        response=error_message,
+        success=False,
+        model_name=model_key or "",
+        trace_id=trace_id,
+        conversation_id=conversation_id or "",
+        task_id=task_id or "",
+    )
+
+    return None
+
+
 @shared_task
 def call_ai_task(prompt, user_id, trace_id = ""):
     """
@@ -280,7 +330,25 @@ def call_ai_task4(self, prompt, user_id, model_key=None, conversation_id=None, t
     """
     
     logger.info(f"开始处理AI调用，会话ID：{conversation_id}用户ID： {user_id}, prompt: {prompt[:50]}...")
-    user = User.objects.get(id=user_id)
+    task_id = self.request.id or ""
+    user = _get_task_user_or_record_missing(
+        user_id=user_id,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+        query=prompt,
+        task_id=task_id,
+        model_key=model_key or "deepseek",
+        failed_step="task_failed",
+        extra_detail={"source": "call_ai_task4"},
+    )
+    if not user:
+        return {
+            "status": "failed",
+            "success": False,
+            "trace_id": trace_id,
+            "conversation_id": conversation_id or "",
+            "error": f"任务用户不存在: user_id={user_id}",
+        }
     start_time = time.time()
 
     AiTraceStepLog.objects.create(
@@ -539,8 +607,26 @@ def langchain_agent_task(
     business_template_name=None,
     business_template_vars=None,
 ):
-    user = User.objects.get(id=user_id)
     business_template_vars = business_template_vars or {}
+    task_id = self.request.id or ""
+    user = _get_task_user_or_record_missing(
+        user_id=user_id,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+        query=query,
+        task_id=task_id,
+        model_key=model_key,
+        failed_step="langchain_agent_task_failed",
+        extra_detail={"framework": "langchain"},
+    )
+    if not user:
+        return {
+            "status": "failed",
+            "success": False,
+            "trace_id": trace_id,
+            "conversation_id": conversation_id or "",
+            "error": f"任务用户不存在: user_id={user_id}",
+        }
 
     start_time = time.time()
 
@@ -551,7 +637,7 @@ def langchain_agent_task(
         step="langchain_agent_task_start",
         query=query,
         detail={
-            "task_id": self.request.id,
+            "task_id": task_id,
             "search_type": search_type,
             "top_k": top_k,
             "model_key": model_key,
@@ -587,7 +673,7 @@ def langchain_agent_task(
                 trace_id=trace_id,
                 conversation_id=conversation_id or "",
                 duration=duration,
-                task_id=self.request.id or "",
+                task_id=task_id,
             )
 
             AiTraceStepLog.objects.create(
@@ -600,7 +686,7 @@ def langchain_agent_task(
                 error_message=error_message,
                 duration=duration,
                 detail={
-                    "task_id": self.request.id,
+                    "task_id": task_id,
                     "framework": result.get("framework", ""),
                 },
             )
@@ -628,7 +714,7 @@ def langchain_agent_task(
             completion_tokens=usage.get("completion_tokens", 0),
             total_tokens=usage.get("total_tokens", 0),
             cost=usage.get("cost", 0.0),
-            task_id=self.request.id or "",
+            task_id=task_id,
         )
 
         AiTraceStepLog.objects.create(
@@ -640,7 +726,7 @@ def langchain_agent_task(
             success=True,
             duration=duration,
             detail={
-                "task_id": self.request.id,
+                "task_id": task_id,
                 "framework": result.get("framework", ""),
                 "references_count": len(result.get("references", [])),
                 "tool_count": len(result.get("tools", [])),
@@ -669,7 +755,7 @@ def langchain_agent_task(
             error_message=error_message,
             duration=duration,
             detail={
-                "task_id": self.request.id,
+                "task_id": task_id,
                 "reason": "unhandled_exception",
             },
         )
@@ -683,7 +769,7 @@ def langchain_agent_task(
             trace_id=trace_id,
             conversation_id=conversation_id or "",
             duration=duration,
-            task_id=self.request.id or "",
+            task_id=task_id,
         )
 
         return {
@@ -707,8 +793,29 @@ def multi_agent_task(
     router_model_key=None,
     enabled_agents=None,
 ):
-    user = User.objects.get(id=user_id)
     enabled_agents = enabled_agents or []
+    task_id = self.request.id or ""
+    user = _get_task_user_or_record_missing(
+        user_id=user_id,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+        query=query,
+        task_id=task_id,
+        model_key=model_key,
+        failed_step="multi_agent_task_failed",
+        extra_detail={
+            "router_type": router_type,
+            "router_model_key": router_model_key or "",
+        },
+    )
+    if not user:
+        return {
+            "status": "failed",
+            "success": False,
+            "trace_id": trace_id,
+            "conversation_id": conversation_id or "",
+            "error": f"任务用户不存在: user_id={user_id}",
+        }
 
     start_time = time.time()
 
@@ -719,7 +826,7 @@ def multi_agent_task(
         step="multi_agent_task_start",
         query=query,
         detail={
-            "task_id": self.request.id,
+            "task_id": task_id,
             "search_type": search_type,
             "top_k": top_k,
             "model_key": model_key,
@@ -758,7 +865,7 @@ def multi_agent_task(
                 trace_id=trace_id,
                 conversation_id=conversation_id or "",
                 duration=duration,
-                task_id=self.request.id or "",
+                task_id=task_id,
             )
 
             AiTraceStepLog.objects.create(
@@ -771,7 +878,7 @@ def multi_agent_task(
                 error_message=error_message,
                 duration=duration,
                 detail={
-                    "task_id": self.request.id,
+                    "task_id": task_id,
                     "router_type": router_type,
                     "agents": result.get("agents", []),
                     "agent_plan": result.get("agent_plan", {}),
@@ -800,7 +907,7 @@ def multi_agent_task(
             duration=duration,
             total_tokens=usage_summary.get("total_tokens", 0),
             cost=usage_summary.get("total_cost", 0.0),
-            task_id=self.request.id or "",
+            task_id=task_id,
         )
 
         AiTraceStepLog.objects.create(
@@ -812,7 +919,7 @@ def multi_agent_task(
             success=True,
             duration=duration,
             detail={
-                "task_id": self.request.id,
+                "task_id": task_id,
                 "router_type": router_type,
                 "agents": result.get("agents", []),
                 "references_count": len(result.get("references", [])),
@@ -844,7 +951,7 @@ def multi_agent_task(
             error_message=error_message,
             duration=duration,
             detail={
-                "task_id": self.request.id,
+                "task_id": task_id,
                 "router_type": router_type,
                 "reason": "unhandled_exception",
             },
@@ -859,7 +966,7 @@ def multi_agent_task(
             trace_id=trace_id,
             conversation_id=conversation_id or "",
             duration=duration,
-            task_id=self.request.id or "",
+            task_id=task_id,
         )
 
         return {
