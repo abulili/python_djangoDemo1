@@ -10,7 +10,8 @@ AiTraceStepLogViewSet, CozeJobRecordAPIView,FeishuEventAPIView,feishu_event_call
 # from rest_framework_simplejwt.views import TokenObtainPairView,TokenRefreshView
 from rest_framework_simplejwt.views import TokenRefreshView
 from users.views import (SingleSessionTokenObtainPairView, SingleSessionTokenRefreshView, LoginEventViewSet)
-
+from django.conf import settings
+from django.conf.urls.static import static
 
 def handler404(request, exception):
     return JsonResponse({
@@ -39,6 +40,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include(router.urls)),
     path("api/workflows/", include("workflows.urls")),
+    path("api/novel-video/", include("novel_video.urls")),
     path('api/my-custom/', MyCustomAPIView.as_view()),
     # path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/', SingleSessionTokenObtainPairView.as_view(), name='token_obtain_pair'),
@@ -56,3 +58,7 @@ urlpatterns = [
 
 handler404 = handler404
 handler500 = handler500
+
+# 小说推文
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

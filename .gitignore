@@ -45,3 +45,7 @@ Thumbs.db
 *.tmp
 *.temp
 tmp/
+
+reports/
+source/
+media/

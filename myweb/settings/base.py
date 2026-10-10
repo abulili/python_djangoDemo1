@@ -13,6 +13,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # 加载项目根目录下的 .env 文件，把文件中的环境变量读取到系统中
 load_dotenv(BASE_DIR / '.env')
 
+# 小说推文
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+FFPROBE_PATH = os.getenv("FFPROBE_PATH", "ffprobe")
+
 # 项目的安全密钥，用于加密会话、密码、CSRF token等
 # 优先从 .env 文件读取，如果没读到就用默认值（生产环境必须改！）
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-default-key-change-me')
@@ -35,6 +42,7 @@ INSTALLED_APPS = [
     'users',                     # 我们自己创建的用户应用
     'corsheaders',               # 跨域请求中间件，用于处理跨域请求
     'workflows',                 # 我们自己创建的流程应用
+    'novel_video',               # 小说推文
    ]
 
 # 中间件列表，请求会按顺序经过这些中间件处理，响应会按相反顺序返回
