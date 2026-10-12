@@ -22,6 +22,7 @@ class MaterialAsset(models.Model):
     style = models.CharField(max_length=50, blank=True, default="", db_index=True)
     tags = models.JSONField(default=list, blank=True)
     duration = models.FloatField(default=0, blank=True)
+    file_size = models.PositiveBigIntegerField(default=0, blank=True)
     aspect_ratio = models.CharField(max_length=20, blank=True, default="9:16")
     is_shared = models.BooleanField(default=False)
     commercial_use = models.BooleanField(default=True)
@@ -46,6 +47,9 @@ class VideoJob(models.Model):
     STATUS_SUCCESS = "success"
     STATUS_FAILED = "failed"
 
+    PROCESS_SERVER = "server"
+    PROCESS_LOCAL = "local"
+
     MODE_SCROLLING_TEXT = "scrolling_text"
     MODE_SENTENCE_CARD = "sentence_card"
 
@@ -53,6 +57,7 @@ class VideoJob(models.Model):
     title = models.CharField(max_length=100)
     novel_text = models.TextField()
     render_mode = models.CharField(max_length=30, default=MODE_SCROLLING_TEXT)
+    process_mode = models.CharField(max_length=20, default=PROCESS_LOCAL, db_index=True)
     style = models.CharField(max_length=50, blank=True, default="")
     target_duration = models.PositiveIntegerField(default=0, blank=True)
 
@@ -68,11 +73,17 @@ class VideoJob(models.Model):
 
     opening_text = models.TextField(blank=True, default="")
     opening_duration = models.PositiveIntegerField(default=3)
+    opening_enabled = models.BooleanField(default=False)
+    opening_audio_mode = models.CharField(max_length=20, default="uploaded")
+    opening_lines = models.JSONField(default=list, blank=True)
 
     font_name = models.CharField(max_length=100, blank=True, default="")
     font_size = models.PositiveIntegerField(default=48)
     font_color = models.CharField(max_length=20, default="#ffffff")
+    font_stroke_width = models.PositiveIntegerField(default=2)
+    font_stroke_color = models.CharField(max_length=20, default="#000000")
 
+    text_start_time = models.FloatField(default=0, blank=True)
     scrolling_start_y = models.IntegerField(default=1600)
     scrolling_end_y = models.IntegerField(default=-1600)
     scrolling_speed = models.FloatField(default=1.0)
@@ -80,6 +91,11 @@ class VideoJob(models.Model):
 
     bgm_loop = models.BooleanField(default=True)
     bgm_volume = models.FloatField(default=0.35)
+    bgm_speed = models.FloatField(default=1.0)
+    tts_enabled = models.BooleanField(default=False)
+    tts_voice = models.CharField(max_length=100, blank=True, default="")
+    tts_rate = models.CharField(max_length=20, blank=True, default="")
+    tts_volume = models.CharField(max_length=20, blank=True, default="")
 
     split_punctuation = models.JSONField(default=list, blank=True)
     text_rules = models.JSONField(default=dict, blank=True)
@@ -96,6 +112,7 @@ class VideoJob(models.Model):
     subtitle_path = models.CharField(max_length=500, blank=True, default="")
     error_message = models.TextField(blank=True, default="")
     duration = models.FloatField(default=0)
+    output_size = models.PositiveBigIntegerField(default=0, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -39,6 +39,7 @@ langchain-text-splitters==1.1.2
 
 # 图像库
 Pillow==12.3.0
+edge-tts==7.2.3
 
 # LangChain 核心
 langchain-core==1.6.3
@@ -48,3 +49,6 @@ django-cors-headers==4.9.0
 
 # ========== 生产级 ==========
 gunicorn==21.2.0
+
+# R2 / S3 compatible object storage
+boto3==1.35.99

@@ -6,15 +6,21 @@ from pathlib import Path
 from django.conf import settings
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 
+from .tts import probe_duration
+
 
 WIDTH = 1080
 HEIGHT = 1920
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 
 
 def run(cmd):
     completed = subprocess.run(cmd, text=True, capture_output=True)
     if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
+        message = completed.stderr.strip() or completed.stdout.strip()
+        command = " ".join(str(item) for item in cmd)
+        raise RuntimeError(f"command failed: {command}\n{message[-4000:]}")
     return completed.stdout.strip()
 
 
@@ -61,7 +67,17 @@ def wrap_text(draw, text, font, max_width):
     return lines
 
 
-def make_text_image(text, path, font_size, color, max_width=900, padding=60, align="center"):
+def make_text_image(
+    text,
+    path,
+    font_size,
+    color,
+    max_width=900,
+    padding=60,
+    align="center",
+    stroke_width=2,
+    stroke_color="#000000",
+):
     font_path = find_font()
     font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
     probe = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
@@ -82,6 +98,8 @@ def make_text_image(text, path, font_size, color, max_width=900, padding=60, ali
     draw = ImageDraw.Draw(image)
     y = padding
     fill = hex_to_rgba(color)
+    stroke_fill = hex_to_rgba(stroke_color)
+    stroke_width = max(0, min(int(stroke_width or 0), 12))
 
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font)
@@ -89,7 +107,7 @@ def make_text_image(text, path, font_size, color, max_width=900, padding=60, ali
             x = padding
         else:
             x = (WIDTH - (bbox[2] - bbox[0])) // 2
-        draw.text((x, y), line, font=font, fill=fill, stroke_width=2, stroke_fill=(0, 0, 0, 180))
+        draw.text((x, y), line, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
         y += line_height
 
     image.save(path)
@@ -116,7 +134,7 @@ def make_horizontal_text_image(text, path, font_size, color, padding=120):
     return text_width
 
 
-def make_card_image(text, path, font_size, color):
+def make_card_image(text, path, font_size, color, stroke_width=3, stroke_color="#000000"):
     image = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     font_path = find_font()
@@ -127,12 +145,59 @@ def make_card_image(text, path, font_size, color):
     total_height = len(lines) * line_height
     y = (HEIGHT - total_height) // 2
     fill = hex_to_rgba(color)
+    stroke_fill = hex_to_rgba(stroke_color)
+    stroke_width = max(0, min(int(stroke_width or 0), 12))
 
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font)
         x = (WIDTH - (bbox[2] - bbox[0])) // 2
-        draw.text((x, y), line, font=font, fill=fill, stroke_width=3, stroke_fill=(0, 0, 0, 220))
+        draw.text((x, y), line, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
         y += line_height
+
+    image.save(path)
+
+
+def make_opening_lines_image(lines, path):
+    image = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    entries = []
+
+    for item in (lines or [])[:4]:
+        font_config = item.get("font") or {}
+        font_size = int(font_config.get("size") or 54)
+        font_path = find_font(font_config.get("name", ""))
+        font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
+        wrapped_lines = wrap_text(draw, item.get("text") or "", font, 880)
+        for line in wrapped_lines:
+            entries.append({
+                "text": line,
+                "font": font,
+                "font_size": font_size,
+                "color": font_config.get("color") or "#ffffff",
+                "stroke_width": max(0, min(int(font_config.get("stroke_width") or 0), 12)),
+                "stroke_color": font_config.get("stroke_color") or "#000000",
+                "line_height": int(font_size * 1.45),
+            })
+
+    if not entries:
+        image.save(path)
+        return
+
+    total_height = sum(item["line_height"] for item in entries)
+    y = (HEIGHT - total_height) // 2
+
+    for item in entries:
+        bbox = draw.textbbox((0, 0), item["text"], font=item["font"])
+        x = (WIDTH - (bbox[2] - bbox[0])) // 2
+        draw.text(
+            (x, y),
+            item["text"],
+            font=item["font"],
+            fill=hex_to_rgba(item["color"]),
+            stroke_width=item["stroke_width"],
+            stroke_fill=hex_to_rgba(item["stroke_color"]),
+        )
+        y += item["line_height"]
 
     image.save(path)
 
@@ -143,10 +208,13 @@ def background_video(background_path, duration, output):
         raise FileNotFoundError(f"background not found: {background_path}")
     if not path.is_file():
         raise FileNotFoundError(f"background path is not a file: {background_path}")
+    suffix = path.suffix.lower()
+    if suffix not in IMAGE_EXTENSIONS and suffix not in VIDEO_EXTENSIONS:
+        raise ValueError(f"background asset must be image or video, got: {background_path}")
 
     vf = f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},setsar=1,fps=30"
 
-    if path.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"]:
+    if suffix in IMAGE_EXTENSIONS:
         run([
             ffmpeg(), "-y",
             "-loop", "1",
@@ -176,21 +244,37 @@ def render_opening(script, work_dir):
     if not opening:
         return None, 0
 
-    duration = int(opening.get("duration") or 3)
+    audio = opening.get("audio") or {}
+    audio_duration = float(audio.get("duration") or 0)
+    audio_path = audio.get("path") or ""
+    if audio_path and audio_duration <= 0 and Path(audio_path).is_file():
+        audio_duration = probe_duration(audio_path)
+    duration = audio_duration or float(opening.get("duration") or 3)
     background_path = (opening.get("background") or {}).get("path")
     base = work_dir / "opening_base.mp4"
     output = work_dir / "opening.mp4"
 
     background_video(background_path, duration, base)
 
+    lines = opening.get("lines") or []
     text = opening.get("text") or ""
-    if not text:
+    if not lines and not text:
         shutil.copyfile(base, output)
         return output, duration
 
     font = opening.get("font") or {}
     overlay = work_dir / "opening_text.png"
-    make_card_image(text, overlay, int(font.get("size") or 54), font.get("color") or "#ffffff")
+    if lines:
+        make_opening_lines_image(lines, overlay)
+    else:
+        make_card_image(
+            text,
+            overlay,
+            int(font.get("size") or 54),
+            font.get("color") or "#ffffff",
+            stroke_width=font.get("stroke_width", 3),
+            stroke_color=font.get("stroke_color", "#000000"),
+        )
     run([
         ffmpeg(), "-y",
         "-i", str(base),
@@ -205,7 +289,8 @@ def render_opening(script, work_dir):
 
 def render_scrolling_main(script, work_dir):
     main = script["main"]
-    requested_duration = int(main.get("duration") or 0)
+    requested_duration = float(main.get("duration") or 0)
+    text_start_time = max(float(main.get("text_start_time") or script.get("text_start_time") or 0), 0)
     background_path = (main.get("background") or {}).get("path")
     base = work_dir / "main_base.mp4"
     text_png = work_dir / "scroll_text.png"
@@ -219,6 +304,8 @@ def render_scrolling_main(script, work_dir):
         max_width=WIDTH - 160,
         padding=80,
         align="left",
+        stroke_width=font.get("stroke_width", 2),
+        stroke_color=font.get("stroke_color", "#000000"),
     )
 
     scrolling = main.get("scrolling") or {}
@@ -227,8 +314,15 @@ def render_scrolling_main(script, work_dir):
     default_end_y = HEIGHT // 2 - image_height
     end_y = int(scrolling.get("end_y", default_end_y))
     x = int(scrolling.get("x", 0))
-    duration = requested_duration or max(8, math.ceil(abs(end_y - start_y) / (90 * speed)))
-    overlay_expr = f"x={x}:y='{start_y}+({end_y}-{start_y})*t/{duration}':eof_action=pass"
+    scroll_duration = max(1, requested_duration - text_start_time) if requested_duration else max(8, math.ceil(abs(end_y - start_y) / (90 * speed)))
+    duration = requested_duration or text_start_time + scroll_duration
+    elapsed_expr = f"max(t-{text_start_time}\\,0)"
+    overlay_expr = (
+        f"x={x}:"
+        f"y='{start_y}+({end_y}-{start_y})*{elapsed_expr}/{scroll_duration}':"
+        f"enable='gte(t,{text_start_time})':"
+        "eof_action=pass"
+    )
 
     background_video(background_path, duration, base)
 
@@ -249,9 +343,19 @@ def render_scrolling_main(script, work_dir):
 def render_sentence_cards(script, work_dir):
     outputs = []
     total_duration = 0
+    text_start_time = max(float(script.get("text_start_time") or 0), 0)
+    first_background = None
+
+    if text_start_time > 0:
+        first_segment = (script.get("segments") or [{}])[0]
+        first_background = (first_segment.get("background") or {}).get("path")
+        delay_video = work_dir / "text_delay.mp4"
+        background_video(first_background, text_start_time, delay_video)
+        outputs.append(delay_video)
+        total_duration += text_start_time
 
     for item in script.get("segments", []):
-        duration = int(item.get("duration") or 3)
+        duration = float(item.get("duration") or 3)
         total_duration += duration
         index = int(item.get("index") or len(outputs) + 1)
         background_path = (item.get("background") or {}).get("path")
@@ -261,7 +365,14 @@ def render_sentence_cards(script, work_dir):
 
         background_video(background_path, duration, base)
         font = item.get("font") or {}
-        make_card_image(item.get("text") or "", overlay, int(font.get("size") or 54), font.get("color") or "#ffffff")
+        make_card_image(
+            item.get("text") or "",
+            overlay,
+            int(font.get("size") or 54),
+            font.get("color") or "#ffffff",
+            stroke_width=font.get("stroke_width", 3),
+            stroke_color=font.get("stroke_color", "#000000"),
+        )
 
         run([
             ffmpeg(), "-y",
@@ -318,7 +429,12 @@ def make_silence(duration, output):
     ])
 
 
-def make_audio_segment(source_path, duration, output, volume=1.0, loop=False):
+def atempo_filters(speed):
+    speed = max(0.5, min(float(speed or 1.0), 2.0))
+    return [f"atempo={speed:.3f}"] if abs(speed - 1.0) > 0.001 else []
+
+
+def make_audio_segment(source_path, duration, output, volume=1.0, loop=False, speed=1.0):
     if not source_path:
         make_silence(duration, output)
         return
@@ -330,12 +446,13 @@ def make_audio_segment(source_path, duration, output, volume=1.0, loop=False):
         raise FileNotFoundError(f"audio path is not a file: {source_path}")
 
     loop_args = ["-stream_loop", "-1"] if loop else []
+    filters = [f"volume={volume}", *atempo_filters(speed), "apad"]
     run([
         ffmpeg(), "-y",
         *loop_args,
         "-i", str(path),
         "-t", str(duration),
-        "-af", f"volume={volume},apad",
+        "-af", ",".join(filters),
         "-c:a", "aac",
         str(output),
     ])
@@ -367,6 +484,51 @@ def concat_audios(audios, output):
     return output
 
 
+def mix_audios(primary_audio, background_audio, output):
+    run([
+        ffmpeg(), "-y",
+        "-i", str(primary_audio),
+        "-i", str(background_audio),
+        "-filter_complex",
+        "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[a]",
+        "-map",
+        "[a]",
+        "-c:a",
+        "aac",
+        str(output),
+    ])
+    return output
+
+
+def build_narration_track(script, main_duration, work_dir):
+    text_start_time = max(float(script.get("text_start_time") or ((script.get("main") or {}).get("text_start_time") or 0)), 0)
+    if script.get("render_mode") == "sentence_card":
+        audios = []
+        if text_start_time > 0:
+            silence = work_dir / "main_narration_delay.m4a"
+            make_silence(text_start_time, silence)
+            audios.append(silence)
+        for item in script.get("segments", []):
+            narration_path = ((item.get("narration") or {}).get("path") or "")
+            if narration_path:
+                audios.append(Path(narration_path))
+        if audios:
+            return concat_audios(audios, work_dir / "main_narration.m4a")
+        return None
+
+    narration_path = (((script.get("audio") or {}).get("narration") or {}).get("path") or "")
+    if not narration_path:
+        return None
+
+    narration = work_dir / "main_narration.m4a"
+    make_audio_segment(narration_path, max(main_duration - text_start_time, 0.1), narration, volume=1.0, loop=False)
+    if text_start_time <= 0:
+        return narration
+    silence = work_dir / "main_narration_delay.m4a"
+    make_silence(text_start_time, silence)
+    return concat_audios([silence, narration], work_dir / "main_narration_with_delay.m4a")
+
+
 def build_audio_track(script, opening_duration, main_duration, work_dir):
     audios = []
 
@@ -379,15 +541,33 @@ def build_audio_track(script, opening_duration, main_duration, work_dir):
     if main_duration > 0:
         audio = script.get("audio") or {}
         bgm = audio.get("bgm") or {}
-        bgm_output = work_dir / "main_bgm.m4a"
-        make_audio_segment(
-            bgm.get("path", ""),
-            main_duration,
-            bgm_output,
-            volume=float(audio.get("bgm_volume", 0.35)),
-            loop=bool(audio.get("bgm_loop", True)),
-        )
-        audios.append(bgm_output)
+        narration_output = build_narration_track(script, main_duration, work_dir)
+        bgm_path = bgm.get("path", "")
+
+        if narration_output and bgm_path:
+            bgm_output = work_dir / "main_bgm.m4a"
+            make_audio_segment(
+                bgm_path,
+                main_duration,
+                bgm_output,
+                volume=float(audio.get("bgm_volume", 0.35)),
+                loop=bool(audio.get("bgm_loop", True)),
+                speed=float(audio.get("bgm_speed", 1.0)),
+            )
+            audios.append(mix_audios(narration_output, bgm_output, work_dir / "main_audio.m4a"))
+        elif narration_output:
+            audios.append(narration_output)
+        else:
+            bgm_output = work_dir / "main_bgm.m4a"
+            make_audio_segment(
+                bgm_path,
+                main_duration,
+                bgm_output,
+                volume=float(audio.get("bgm_volume", 0.35)),
+                loop=bool(audio.get("bgm_loop", True)),
+                speed=float(audio.get("bgm_speed", 1.0)),
+            )
+            audios.append(bgm_output)
 
     return concat_audios(audios, work_dir / "audio.m4a")
 

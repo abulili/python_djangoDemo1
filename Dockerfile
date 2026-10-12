@@ -12,6 +12,10 @@ ENV DJANGO_SETTINGS_MODULE=myweb.settings.prod
 # 安装系统依赖
 RUN apt-get update && apt-get install -y \
     default-libmysqlclient-dev \
+    ffmpeg \
+    fontconfig \
+    fonts-noto-cjk \
+    fonts-wqy-zenhei \
     gcc \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*

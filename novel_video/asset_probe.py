@@ -1,8 +1,11 @@
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 from django.conf import settings
+
+from .storage import download_file_from_storage, r2_enabled
 
 
 def ffprobe():
@@ -34,34 +37,52 @@ def probe_duration(path):
 
 def probe_asset(asset, save=False):
     path = Path(asset.get_path() or "")
-    if not path.exists():
-        return {
-            "ok": False,
-            "error": f"asset path not found: {path}",
-            "duration": asset.duration,
-        }
-    if not path.is_file():
-        return {
-            "ok": False,
-            "error": f"asset path is not a file: {path}",
-            "duration": asset.duration,
-        }
-
+    temp_dir = None
     try:
-        duration = probe_duration(path)
-    except Exception as exc:
+        if not path.exists():
+            if r2_enabled() and asset.storage_type == asset.STORAGE_UPLOAD:
+                try:
+                    temp_dir = tempfile.TemporaryDirectory()
+                    suffix = path.suffix or ".bin"
+                    path = Path(temp_dir.name) / f"asset{suffix}"
+                    download_file_from_storage(asset.get_path(), path)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "error": f"asset path not found and R2 download failed: {exc}",
+                        "duration": asset.duration,
+                    }
+            else:
+                return {
+                    "ok": False,
+                    "error": f"asset path not found: {path}",
+                    "duration": asset.duration,
+                }
+        if not path.is_file():
+            return {
+                "ok": False,
+                "error": f"asset path is not a file: {path}",
+                "duration": asset.duration,
+            }
+
+        try:
+            duration = probe_duration(path)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "duration": asset.duration,
+            }
+
+        asset.duration = round(duration, 3)
+        if save:
+            asset.save(update_fields=["duration"])
+
         return {
-            "ok": False,
-            "error": str(exc),
+            "ok": True,
+            "error": "",
             "duration": asset.duration,
         }
-
-    asset.duration = round(duration, 3)
-    if save:
-        asset.save(update_fields=["duration"])
-
-    return {
-        "ok": True,
-        "error": "",
-        "duration": asset.duration,
-    }
+    finally:
+        if temp_dir:
+            temp_dir.cleanup()

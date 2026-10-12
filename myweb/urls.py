@@ -62,3 +62,7 @@ handler500 = handler500
 # 小说推文
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    novel_video_storage_url = getattr(settings, "NOVEL_VIDEO_STORAGE_URL", "")
+    novel_video_storage_root = getattr(settings, "NOVEL_VIDEO_STORAGE_ROOT", None)
+    if novel_video_storage_url and novel_video_storage_root:
+        urlpatterns += static(novel_video_storage_url, document_root=novel_video_storage_root)
